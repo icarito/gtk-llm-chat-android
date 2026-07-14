@@ -1,0 +1,122 @@
+[debug] [2026-07-14T02:42:38.259Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:42:38.260Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase projects:list --json
+[debug] [2026-07-14T02:42:38.261Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:42:38.261Z] Platform:      linux
+[debug] [2026-07-14T02:42:38.261Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:42:38.261Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:42:38.261Z] Time:          Mon Jul 13 2026 21:42:38 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:42:38.261Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:42:38.270Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-07-14T02:42:38.284Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:42:38.413Z] Error: Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.
+    at GoogleAuth.getApplicationDefaultAsync (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/google-auth-library/build/src/auth/googleauth.js:287:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async GoogleAuth._GoogleAuth_determineClient (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/google-auth-library/build/src/auth/googleauth.js:834:32)
+    at async GoogleAuth.getClient (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/google-auth-library/build/src/auth/googleauth.js:698:20)
+    at async GoogleAuth.getAccessToken (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/google-auth-library/build/src/auth/googleauth.js:722:24)
+    at async autoAuth (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/requireAuth.js:38:19)
+    at async Object.requireAuth [as fn] (/home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/requireAuth.js:100:20)
+    at async /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/command.js:278:17
+[error] 
+[error] Error: Failed to authenticate, have you run firebase login?
+[debug] [2026-07-14T02:44:20.158Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:44:20.160Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase projects:list --json
+[debug] [2026-07-14T02:44:20.160Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:44:20.161Z] Platform:      linux
+[debug] [2026-07-14T02:44:20.161Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:44:20.161Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:44:20.161Z] Time:          Mon Jul 13 2026 21:44:20 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:44:20.161Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:44:20.165Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:44:20.165Z] > authorizing via signed-in user (sebastian@fuentelibre.org)
+[debug] [2026-07-14T02:44:20.175Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:20.175Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:20.177Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=1000
+[debug] [2026-07-14T02:44:21.160Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-07-14T02:44:32.815Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:44:32.817Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase apps:list --project floralescobija --json
+[debug] [2026-07-14T02:44:32.817Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:44:32.817Z] Platform:      linux
+[debug] [2026-07-14T02:44:32.817Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:44:32.817Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:44:32.817Z] Time:          Mon Jul 13 2026 21:44:32 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:44:32.817Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:44:32.831Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:44:32.831Z] > authorizing via signed-in user (sebastian@fuentelibre.org)
+[debug] [2026-07-14T02:44:32.843Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:32.843Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:32.844Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/floralescobija:searchApps pageSize=100
+[debug] [2026-07-14T02:44:33.538Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/floralescobija:searchApps 200
+[debug] [2026-07-14T02:44:45.580Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:44:45.581Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase apps:create android gtk-llm-chat-android --project floralescobija --package-name org.fuentelibre.gtk_llm_chat --json
+[debug] [2026-07-14T02:44:45.582Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:44:45.582Z] Platform:      linux
+[debug] [2026-07-14T02:44:45.582Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:44:45.582Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:44:45.582Z] Time:          Mon Jul 13 2026 21:44:45 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:44:45.582Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:44:45.595Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:44:45.595Z] > authorizing via signed-in user (sebastian@fuentelibre.org)
+[info] Create your ANDROID app in project floralescobija:
+[debug] [2026-07-14T02:44:45.604Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:45.604Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:45.605Z] >>> [apiv2][query] POST https://firebase.googleapis.com/v1beta1/projects/floralescobija/androidApps [none]
+[debug] [2026-07-14T02:44:45.605Z] >>> [apiv2][body] POST https://firebase.googleapis.com/v1beta1/projects/floralescobija/androidApps {"displayName":"gtk-llm-chat-android","packageName":"org.fuentelibre.gtk_llm_chat"}
+[debug] [2026-07-14T02:44:48.257Z] <<< [apiv2][status] POST https://firebase.googleapis.com/v1beta1/projects/floralescobija/androidApps 200
+[debug] [2026-07-14T02:44:48.257Z] <<< [apiv2][body] POST https://firebase.googleapis.com/v1beta1/projects/floralescobija/androidApps {"name":"operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy"}
+[debug] [2026-07-14T02:44:48.258Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:48.258Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:48.258Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy [none]
+[debug] [2026-07-14T02:44:48.959Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy 200
+[debug] [2026-07-14T02:44:48.959Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy {"name":"operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy"}
+[debug] [2026-07-14T02:44:49.459Z] [Create Android app Poller] Retrying task index 0
+[debug] [2026-07-14T02:44:49.460Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:49.460Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:49.460Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy [none]
+[debug] [2026-07-14T02:44:50.096Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy 200
+[debug] [2026-07-14T02:44:50.096Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy {"name":"operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy"}
+[debug] [2026-07-14T02:44:51.097Z] [Create Android app Poller] Retrying task index 0
+[debug] [2026-07-14T02:44:51.097Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:51.098Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:51.098Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy [none]
+[debug] [2026-07-14T02:44:51.725Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy 200
+[debug] [2026-07-14T02:44:51.725Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy {"name":"operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy"}
+[debug] [2026-07-14T02:44:53.725Z] [Create Android app Poller] Retrying task index 0
+[debug] [2026-07-14T02:44:53.726Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:53.726Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:44:53.727Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy [none]
+[debug] [2026-07-14T02:44:54.428Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/operations/workflows/NDBmN2ViODktMjdiMC00ZWNlLWJlMzUtMTY3OTUxZDgxZDEy 200
+[debug] [2026-07-14T02:45:00.726Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:45:00.727Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase apps:sdkconfig android 1:1037069524660:android:fe6f187e280951a0b101e1 --project floralescobija -o google-services.json
+[debug] [2026-07-14T02:45:00.728Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:45:00.728Z] Platform:      linux
+[debug] [2026-07-14T02:45:00.728Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:45:00.728Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:45:00.728Z] Time:          Mon Jul 13 2026 21:45:00 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:45:00.728Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:45:00.739Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:45:00.740Z] > authorizing via signed-in user (sebastian@fuentelibre.org)
+[debug] [2026-07-14T02:45:00.749Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:45:00.749Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:45:00.750Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/-/androidApps/1:1037069524660:android:fe6f187e280951a0b101e1/config [none]
+[debug] [2026-07-14T02:45:03.823Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/-/androidApps/1:1037069524660:android:fe6f187e280951a0b101e1/config 200
+[debug] [2026-07-14T02:45:19.566Z] ----------------------------------------------------------------------
+[debug] [2026-07-14T02:45:19.567Z] Command:       /usr/bin/node /home/icarito/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase apps:list --project floralescobija --json
+[debug] [2026-07-14T02:45:19.568Z] CLI Version:   15.23.0
+[debug] [2026-07-14T02:45:19.568Z] Platform:      linux
+[debug] [2026-07-14T02:45:19.568Z] Node Version:  v22.23.1
+[debug] [2026-07-14T02:45:19.568Z] Detected Agent: codex_cli
+[debug] [2026-07-14T02:45:19.568Z] Time:          Mon Jul 13 2026 21:45:19 GMT-0500 (Peru Standard Time)
+[debug] [2026-07-14T02:45:19.568Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-14T02:45:19.581Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-14T02:45:19.581Z] > authorizing via signed-in user (sebastian@fuentelibre.org)
+[debug] [2026-07-14T02:45:19.591Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:45:19.591Z] Checked if tokens are valid: true, expires at: 1784000638688
+[debug] [2026-07-14T02:45:19.592Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/floralescobija:searchApps pageSize=100
+[debug] [2026-07-14T02:45:20.304Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/floralescobija:searchApps 200

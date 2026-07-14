@@ -1,11 +1,26 @@
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { XmppMessage } from '@/types/xmpp';
+import { PushStatus } from '@/xmpp/pushStatus';
 
-// Configure notification channel
-export async function setupNotifications() {
+const PUSH_TOKEN_KEY = '@gtk_llm_chat:expo_push_token';
+const XMPP_MESSAGES_CHANNEL = 'xmpp_messages';
+const pushLog = globalThis.console;
+
+export interface NotificationSetupResult {
+  granted: boolean;
+  expoPushToken: string | null;
+}
+
+function notificationUrlForJid(jid: string): string {
+  return `/xmpp-chat/${encodeURIComponent(jid)}`;
+}
+
+async function ensureNotificationChannels(): Promise<void> {
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('xmpp_messages', {
+    await Notifications.setNotificationChannelAsync(XMPP_MESSAGES_CHANNEL, {
       name: 'Mensajes XMPP',
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
@@ -13,15 +28,64 @@ export async function setupNotifications() {
       lightColor: '#4FC3F7',
     });
   }
+}
 
+async function requestNotificationPermission(): Promise<boolean> {
+  const existing = await Notifications.getPermissionsAsync();
+  if (existing.status === 'granted') return true;
+  const requested = await Notifications.requestPermissionsAsync();
+  return requested.status === 'granted';
+}
+
+async function resolveExpoPushToken(): Promise<string | null> {
+  const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+  if (!projectId) {
+    PushStatus.update({ token: 'error', error: 'Expo projectId no configurado' });
+    pushLog.warn('[xmpp-push] Expo projectId not configured; remote push disabled');
+    return null;
+  }
+
+  const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+  await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
+  PushStatus.update({ token: 'ready', error: null });
+  pushLog.warn(`[xmpp-push] Expo push token acquired for project ${projectId}`);
+  return token;
+}
+
+// Configure notification channels, permissions, and push token when available.
+export async function setupNotifications(): Promise<NotificationSetupResult> {
+  PushStatus.update({ token: 'requesting', error: null });
+  pushLog.warn('[xmpp-push] Notification setup started');
+  await ensureNotificationChannels();
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
       shouldShowBubble: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
     }),
   });
+
+  const granted = await requestNotificationPermission();
+  if (!granted) {
+    PushStatus.update({ token: 'denied', error: 'Permiso de notificaciones denegado' });
+    pushLog.warn('[xmpp-push] Notification permission denied; remote push disabled');
+    return { granted: false, expoPushToken: null };
+  }
+
+  try {
+    return { granted: true, expoPushToken: await resolveExpoPushToken() };
+  } catch (error) {
+    PushStatus.update({ token: 'error', error: error instanceof Error ? error.message : String(error) });
+    pushLog.warn('[xmpp-push] Failed to acquire Expo push token', error);
+    return { granted: true, expoPushToken: null };
+  }
+}
+
+export async function getStoredExpoPushToken(): Promise<string | null> {
+  return AsyncStorage.getItem(PUSH_TOKEN_KEY);
 }
 
 // Track if app is in foreground
@@ -44,9 +108,14 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
       title,
       body,
       sound: 'default',
-      data: { jid: msg.from, type: 'xmpp_message' },
+      ...(Platform.OS === 'android' ? { channelId: XMPP_MESSAGES_CHANNEL } : {}),
+      data: {
+        jid: msg.from,
+        type: 'xmpp_message',
+        url: notificationUrlForJid(msg.from),
+      },
       priority: Notifications.AndroidNotificationPriority.HIGH,
     },
-    trigger: null, // immediate
+    trigger: null,
   });
 }

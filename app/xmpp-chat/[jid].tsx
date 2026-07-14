@@ -29,6 +29,21 @@ const DEDUPE_WINDOW_MS = 30_000;
 const INITIAL_PAGE_SIZE = 30;
 const OLDER_PAGE_SIZE = 30;
 
+function runWhenIdle(task: () => void): () => void {
+  const idle = (
+    globalThis as typeof globalThis & {
+      requestIdleCallback?: (callback: () => void) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    }
+  );
+  if (idle.requestIdleCallback) {
+    const handle = idle.requestIdleCallback(task);
+    return () => idle.cancelIdleCallback?.(handle);
+  }
+  const handle = setTimeout(task, 0);
+  return () => clearTimeout(handle);
+}
+
 /**
  * Merge message lists into one chronological, deduped conversation.
  *
@@ -60,6 +75,20 @@ function mergeMessages(...lists: XmppMessage[][]): XmppMessage[] {
   );
 }
 
+function pushStatusLabel(
+  token: 'idle' | 'requesting' | 'ready' | 'denied' | 'error',
+  registration: 'idle' | 'pending' | 'registered' | 'error',
+): string {
+  if (registration === 'registered') return 'Push: registrado';
+  if (registration === 'pending') return 'Push: registrando';
+  if (registration === 'error') return 'Push: error';
+  if (token === 'ready') return 'Push: token';
+  if (token === 'requesting') return 'Push: preparando';
+  if (token === 'denied') return 'Push: sin permiso';
+  if (token === 'error') return 'Push: error';
+  return 'Push: pendiente';
+}
+
 export default function XmppChatScreen() {
   const { jid } = useLocalSearchParams<{ jid: string }>();
   const decodedJid = decodeURIComponent(jid || '');
@@ -67,6 +96,7 @@ export default function XmppChatScreen() {
     state,
     messages,
     pendingActions,
+    pushStatus,
     contacts,
     sendMessage,
     answerPendingAction,
@@ -76,6 +106,7 @@ export default function XmppChatScreen() {
   } = useXmpp();
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<XmppMessage[]>([]);
+  const [rehydrating, setRehydrating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [exhausted, setExhausted] = useState(false);
@@ -84,46 +115,82 @@ export default function XmppChatScreen() {
   const [bypassEnabled, setBypassEnabled] = useState(false);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
+  const hasCachedHistoryRef = useRef(false);
 
   // Paint the cache immediately on open, then catch up with the archive.
   useEffect(() => {
     let cancelled = false;
+    let cancelIdle: (() => void) | null = null;
+    hasCachedHistoryRef.current = false;
     setHistory([]);
     setExhausted(false);
-
-    (async () => {
-      const cached = await XmppService.loadCachedHistory(decodedJid, INITIAL_PAGE_SIZE);
-      if (cancelled) return;
-      setHistory(cached);
-    })();
-
-    return () => { cancelled = true; };
-  }, [decodedJid]);
-
-  // Catch up whenever we (re)connect — the archive is the source of truth.
-  useEffect(() => {
-    if (state !== 'online') return;
-    let cancelled = false;
-    setSyncing(true);
+    setRehydrating(true);
 
     (async () => {
       try {
-        // syncHistory drains the whole archive into the local cache, which can
-        // be weeks of messages. Only the tail belongs on screen — the rest sits
-        // in the cache behind "load older".
+        const cached = await XmppService.loadCachedHistory(
+          decodedJid,
+          INITIAL_PAGE_SIZE,
+          { restoreActions: false },
+        );
+        if (cancelled) return;
+        hasCachedHistoryRef.current = cached.length > 0;
+        setHistory(cached);
+        cancelIdle = runWhenIdle(() => {
+          XmppService.restoreCachedActions(decodedJid, INITIAL_PAGE_SIZE)
+            .finally(() => {
+              if (!cancelled) setRehydrating(false);
+            });
+        });
+      } finally {
+        if (!cancelled && cancelIdle === null) setRehydrating(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      cancelIdle?.();
+    };
+  }, [decodedJid]);
+
+  // Catch up when there is no cache. If cache exists, refresh MAM quietly
+  // after initial render; the visible conversation is already usable.
+  useEffect(() => {
+    if (state !== 'online') return;
+    let cancelled = false;
+    const showSync = !hasCachedHistoryRef.current;
+    let cancelIdle: (() => void) | null = null;
+    if (showSync) setSyncing(true);
+
+    const runSync = async () => {
+      try {
         await XmppService.syncHistory(decodedJid);
         if (cancelled) return;
-        const recent = await XmppService.loadCachedHistory(decodedJid, INITIAL_PAGE_SIZE);
+        const recent = await XmppService.loadCachedHistory(
+          decodedJid,
+          INITIAL_PAGE_SIZE,
+          { restoreActions: false },
+        );
         if (cancelled) return;
+        hasCachedHistoryRef.current = recent.length > 0;
         setHistory((prev) => (prev.length > recent.length
           ? mergeMessages(prev, recent)  // user already paged further back
           : recent));
       } finally {
         if (!cancelled) setSyncing(false);
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
+    if (showSync) {
+      runSync();
+    } else {
+      cancelIdle = runWhenIdle(() => { runSync(); });
+    }
+
+    return () => {
+      cancelled = true;
+      cancelIdle?.();
+    };
   }, [decodedJid, state]);
 
   const handleLoadOlder = useCallback(async () => {
@@ -153,13 +220,50 @@ export default function XmppChatScreen() {
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     [decodedJid, pendingActions],
   );
-  const visiblePending = chatPendingActions[0] ?? null;
+  const pendingGroups = useMemo(() => {
+    const grouped = new Map<string, {
+      id: string;
+      timestamp: string;
+      detail: string;
+      actions: XmppPendingAction[];
+    }>();
+
+    for (const action of chatPendingActions) {
+      const key = action.messageId || action.id;
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.actions.push(action);
+      } else {
+        grouped.set(key, {
+          id: key,
+          timestamp: action.timestamp,
+          detail: action.detail,
+          actions: [action],
+        });
+      }
+    }
+
+    return [...grouped.values()].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
+  }, [chatPendingActions]);
+  const visiblePending = pendingGroups[0] ?? null;
   const contact = useMemo(
     () => contacts.find((item) => item.jid === decodedJid),
     [contacts, decodedJid],
   );
   const agentStatus = useMemo(() => parseAgentStatus(contact?.status), [contact?.status]);
   const agentDetails = useMemo(() => formatAgentDetails(agentStatus), [agentStatus]);
+  const statusDetails = useMemo(() => {
+    const details = [
+      pushStatusLabel(pushStatus.token, pushStatus.registration),
+      ...agentDetails,
+    ];
+    if (pushStatus.error) {
+      details.push(`Push error: ${pushStatus.error.slice(0, 48)}`);
+    }
+    return details;
+  }, [agentDetails, pushStatus]);
 
   // The list renders inverted (newest at the bottom, growing upward), so the
   // latest message is where the viewport already sits — no scrollToEnd, no
@@ -262,13 +366,13 @@ export default function XmppChatScreen() {
                 {formatAgentActivity(agentStatus.activity)}
               </Text>
             </View>
-            {agentDetails.length > 0 && (
+            {statusDetails.length > 0 && (
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.statusMetrics}
               >
-                {agentDetails.map((detail) => (
+                {statusDetails.map((detail) => (
                   <Text key={detail} style={styles.statusMetric} numberOfLines={1}>
                     {detail}
                   </Text>
@@ -276,40 +380,6 @@ export default function XmppChatScreen() {
               </ScrollView>
             )}
           </View>
-
-          {visiblePending && (
-            <View style={styles.pendingCard}>
-              <View style={styles.pendingHeader}>
-                <Text style={styles.pendingTitle}>
-                  {chatPendingActions.length > 1
-                    ? `${chatPendingActions.length} preguntas pendientes`
-                    : 'Pregunta pendiente'}
-                </Text>
-                <Text style={styles.pendingTime}>
-                  {new Date(visiblePending.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </View>
-              <Text style={styles.pendingDetail} numberOfLines={2}>
-                {visiblePending.detail}
-              </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pendingActions}>
-                {chatPendingActions.map((action) => (
-                  <TouchableOpacity
-                    key={action.id}
-                    style={[styles.actionPill, actionBusy === action.id && styles.actionPillDisabled]}
-                    disabled={state !== 'online' || actionBusy !== null}
-                    onPress={() => handleAnswerAction(action)}
-                  >
-                    {actionBusy === action.id ? (
-                      <ActivityIndicator size="small" color={Colors.background} />
-                    ) : (
-                      <Text style={styles.actionPillText}>{action.label}</Text>
-                    )}
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
 
           <TouchableOpacity
             style={styles.agentControlsToggle}
@@ -392,6 +462,49 @@ export default function XmppChatScreen() {
             </View>
           }
         />
+
+        {(rehydrating || syncing) && (
+          <View style={styles.hydrationBar}>
+            <ActivityIndicator size="small" color={Colors.primary} />
+            <Text style={styles.hydrationText}>
+              {rehydrating ? 'Rehidratando historial' : 'Sincronizando MAM'}
+            </Text>
+          </View>
+        )}
+
+        {visiblePending && (
+          <View style={styles.pendingCard}>
+            <View style={styles.pendingHeader}>
+              <Text style={styles.pendingTitle}>
+                {pendingGroups.length > 1
+                  ? `Response needed (${pendingGroups.length})`
+                  : 'Response needed'}
+              </Text>
+              <Text style={styles.pendingTime}>
+                {new Date(visiblePending.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+            <Text style={styles.pendingDetail} numberOfLines={2}>
+              {visiblePending.detail}
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pendingActions}>
+              {visiblePending.actions.map((action) => (
+                <TouchableOpacity
+                  key={action.id}
+                  style={[styles.actionPill, actionBusy === action.id && styles.actionPillDisabled]}
+                  disabled={state !== 'online' || actionBusy !== null}
+                  onPress={() => handleAnswerAction(action)}
+                >
+                  {actionBusy === action.id ? (
+                    <ActivityIndicator size="small" color={Colors.background} />
+                  ) : (
+                    <Text style={styles.actionPillText}>{action.label}</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
         {state !== 'online' && (
           <View style={styles.disconnectedBar}>
@@ -497,6 +610,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.surfaceBorder,
     borderRadius: 8,
     padding: 10,
+    marginHorizontal: 6,
+    marginTop: 6,
     gap: 8,
   },
   pendingHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
@@ -514,6 +629,17 @@ const styles = StyleSheet.create({
   },
   actionPillDisabled: { opacity: 0.5 },
   actionPillText: { color: Colors.background, fontSize: 13, fontWeight: '700' },
+  hydrationBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.surfaceBorder,
+  },
+  hydrationText: { color: Colors.textDim, fontSize: 12, fontWeight: '600' },
   agentControlsToggle: {
     flexDirection: 'row',
     alignItems: 'center',

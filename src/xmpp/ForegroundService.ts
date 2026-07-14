@@ -2,24 +2,25 @@ import { NativeModules } from 'react-native';
 
 const { XmppServiceModule } = NativeModules;
 
-function startForegroundService(jid: string) {
-  // Use Intent via NativeModules or a simple bridge
-  // For now, we start via the native module
+function startForegroundService(jid: string): Promise<void> {
   if (XmppServiceModule) {
-    XmppServiceModule.startService(jid);
+    return XmppServiceModule.startService(jid).then(() => undefined);
   }
+  return Promise.resolve();
 }
 
-function stopForegroundService() {
+function stopForegroundService(): Promise<void> {
   if (XmppServiceModule) {
-    XmppServiceModule.stopService();
+    return XmppServiceModule.stopService().then(() => undefined);
   }
+  return Promise.resolve();
 }
 
-function updateNotification(jid: string) {
+function updateNotification(jid: string): Promise<void> {
   if (XmppServiceModule) {
-    XmppServiceModule.updateNotification(jid);
+    return XmppServiceModule.updateNotification(jid).then(() => undefined);
   }
+  return Promise.resolve();
 }
 
 export const ForegroundService = {

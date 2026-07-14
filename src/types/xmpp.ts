@@ -36,6 +36,8 @@ export interface XmppMessage {
   isMention?: boolean;
   isGroup: boolean;
   threadId?: string | null;
+  quickResponses?: XmppQuickResponse[];
+  commands?: XmppInlineCommand[];
   replyTo?: {
     text: string;
     sender: string;

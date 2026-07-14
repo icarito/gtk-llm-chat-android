@@ -6,6 +6,7 @@
  * the server-side MAM archive, never the source of truth.
  */
 import * as SQLite from 'expo-sqlite';
+import type { XmppInlineCommand, XmppQuickResponse } from '@/types/xmpp';
 
 const DB_NAME = 'xmpp_history.db';
 
@@ -17,6 +18,8 @@ CREATE TABLE IF NOT EXISTS messages (
     direction TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     mam_id TEXT,
+    quick_responses TEXT,
+    commands TEXT,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
@@ -29,6 +32,12 @@ export interface HistoryRow {
   direction: Direction;
   timestamp: string;
   mam_id: string | null;
+  quick_responses: XmppQuickResponse[];
+  commands: XmppInlineCommand[];
+}
+
+export interface HistoryPreviewRow extends HistoryRow {
+  bare_jid: string;
 }
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -38,11 +47,49 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
     dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
       await db.execAsync('PRAGMA journal_mode=WAL;');
       await db.execAsync(SCHEMA);
-      await cleanupMamShadowDuplicates(db);
+      await migrateMetadataColumns(db);
       return db;
     });
   }
   return dbPromise;
+}
+
+async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> {
+  const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(messages)');
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has('quick_responses')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN quick_responses TEXT');
+  }
+  if (!names.has('commands')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN commands TEXT');
+  }
+}
+
+function encodeMetadata(value: unknown[] | null | undefined): string | null {
+  return value && value.length > 0 ? JSON.stringify(value) : null;
+}
+
+function decodeMetadata<T>(value: string | null | undefined): T[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch {
+    return [];
+  }
+}
+
+type DbHistoryRow = Omit<HistoryRow, 'quick_responses' | 'commands'> & {
+  quick_responses: string | null;
+  commands: string | null;
+};
+
+function decodeRow(row: DbHistoryRow): HistoryRow {
+  return {
+    ...row,
+    quick_responses: decodeMetadata<XmppQuickResponse>(row.quick_responses),
+    commands: decodeMetadata<XmppInlineCommand>(row.commands),
+  };
 }
 
 function parseTs(value: string | null | undefined): number | null {
@@ -52,37 +99,17 @@ function parseTs(value: string | null | undefined): number | null {
 }
 
 async function cleanupMamShadowDuplicates(db: SQLite.SQLiteDatabase, windowSeconds = 30): Promise<void> {
-  const mamRows = await db.getAllAsync<{
-    id: number;
-    bare_jid: string;
-    body: string;
-    direction: Direction;
-    timestamp: string;
-  }>(
-    'SELECT id, bare_jid, body, direction, timestamp FROM messages WHERE mam_id IS NOT NULL',
+  await db.runAsync(
+    'DELETE FROM messages WHERE mam_id IS NULL AND EXISTS ('
+      + 'SELECT 1 FROM messages archived '
+      + 'WHERE archived.mam_id IS NOT NULL '
+      + 'AND archived.bare_jid = messages.bare_jid '
+      + 'AND archived.body = messages.body '
+      + 'AND archived.direction = messages.direction '
+      + 'AND ABS((julianday(archived.timestamp) - julianday(messages.timestamp)) * 86400.0) <= ?'
+      + ')',
+    [windowSeconds],
   );
-  const deleteIds = new Set<number>();
-
-  for (const row of mamRows) {
-    const target = parseTs(row.timestamp);
-    if (target === null) continue;
-    const shadows = await db.getAllAsync<{ id: number; timestamp: string }>(
-      'SELECT id, timestamp FROM messages '
-        + 'WHERE bare_jid = ? AND body = ? AND direction = ? AND mam_id IS NULL',
-      [row.bare_jid, row.body, row.direction],
-    );
-    for (const shadow of shadows) {
-      const candidate = parseTs(shadow.timestamp);
-      if (candidate === null) continue;
-      if (Math.abs(target - candidate) <= windowSeconds * 1000) {
-        deleteIds.add(shadow.id);
-      }
-    }
-  }
-
-  for (const id of deleteIds) {
-    await db.runAsync('DELETE FROM messages WHERE id = ?', [id]);
-  }
 }
 
 export const XmppHistory = {
@@ -97,37 +124,58 @@ export const XmppHistory = {
     direction: Direction,
     timestamp: string,
     mamId: string | null = null,
+    quickResponses: XmppQuickResponse[] | null = null,
+    commands: XmppInlineCommand[] | null = null,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
-      'INSERT OR IGNORE INTO messages (bare_jid, body, direction, timestamp, mam_id) VALUES (?, ?, ?, ?, ?)',
-      [bareJid, body, direction, timestamp, mamId],
+      'INSERT OR IGNORE INTO messages '
+        + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        bareJid,
+        body,
+        direction,
+        timestamp,
+        mamId,
+        encodeMetadata(quickResponses),
+        encodeMetadata(commands),
+      ],
     );
+    if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
+      await db.runAsync(
+        'UPDATE messages SET quick_responses = COALESCE(?, quick_responses), '
+          + 'commands = COALESCE(?, commands) WHERE bare_jid = ? AND mam_id = ?',
+        [encodeMetadata(quickResponses), encodeMetadata(commands), bareJid, mamId],
+      );
+    }
     return result.changes > 0;
   },
 
   /** Newest `limit` messages, returned oldest-first for rendering. */
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
-    return db.getAllAsync<HistoryRow>(
-      'SELECT body, direction, timestamp, mam_id FROM ('
-        + 'SELECT body, direction, timestamp, mam_id FROM messages '
+    const rows = await db.getAllAsync<DbHistoryRow>(
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM messages '
         + 'WHERE bare_jid = ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, limit],
     );
+    return rows.map(decodeRow);
   },
 
   /** The page of messages immediately older than `beforeTimestamp`. */
   async getBefore(bareJid: string, beforeTimestamp: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
-    return db.getAllAsync<HistoryRow>(
-      'SELECT body, direction, timestamp, mam_id FROM ('
-        + 'SELECT body, direction, timestamp, mam_id FROM messages '
+    const rows = await db.getAllAsync<DbHistoryRow>(
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM messages '
         + 'WHERE bare_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, beforeTimestamp, limit],
     );
+    return rows.map(decodeRow);
   },
 
   /** Timestamp of the newest cached message — the anchor for MAM catch-up. */
@@ -138,6 +186,25 @@ export const XmppHistory = {
       [bareJid],
     );
     return row?.timestamp ?? null;
+  },
+
+  /** Latest cached message for each requested conversation. */
+  async getLatestForContacts(bareJids: string[]): Promise<HistoryPreviewRow[]> {
+    const unique = [...new Set(bareJids.filter(Boolean))];
+    if (unique.length === 0) return [];
+
+    const db = await getDb();
+    const placeholders = unique.map(() => '?').join(',');
+    const rows = await db.getAllAsync<DbHistoryRow & { bare_jid: string }>(
+      'SELECT m.bare_jid, m.body, m.direction, m.timestamp, m.mam_id, m.quick_responses, m.commands FROM messages m '
+        + 'JOIN ('
+        + 'SELECT bare_jid, MAX(timestamp) AS timestamp FROM messages '
+        + `WHERE bare_jid IN (${placeholders}) GROUP BY bare_jid`
+        + ') latest ON latest.bare_jid = m.bare_jid AND latest.timestamp = m.timestamp '
+        + 'ORDER BY m.timestamp DESC',
+      unique,
+    );
+    return rows.map((row) => ({ ...decodeRow(row), bare_jid: row.bare_jid }));
   },
 
   /**
@@ -152,6 +219,8 @@ export const XmppHistory = {
     direction: Direction,
     timestamp: string,
     mamId: string,
+    quickResponses: XmppQuickResponse[] | null = null,
+    commands: XmppInlineCommand[] | null = null,
     windowSeconds = 30,
   ): Promise<boolean> {
     const target = parseTs(timestamp);
@@ -168,13 +237,34 @@ export const XmppHistory = {
       if (candidate === null) continue;
       if (Math.abs(target - candidate) <= windowSeconds * 1000) {
         await db.runAsync(
-          'UPDATE messages SET timestamp = ?, mam_id = ? WHERE id = ?',
-          [timestamp, mamId, row.id],
+          'UPDATE messages SET timestamp = ?, mam_id = ?, '
+            + 'quick_responses = COALESCE(?, quick_responses), '
+            + 'commands = COALESCE(?, commands) WHERE id = ?',
+          [
+            timestamp,
+            mamId,
+            encodeMetadata(quickResponses),
+            encodeMetadata(commands),
+            row.id,
+          ],
         );
         return true;
       }
     }
     return false;
+  },
+
+  async quickResponseWasAnswered(timestamp: string, values: string[]): Promise<boolean> {
+    const candidates = [...new Set(values.filter(Boolean))];
+    if (candidates.length === 0) return false;
+    const db = await getDb();
+    const placeholders = candidates.map(() => '?').join(',');
+    const row = await db.getFirstAsync<{ id: number }>(
+      'SELECT id FROM messages WHERE direction = ? AND timestamp >= ? '
+        + `AND body IN (${placeholders}) LIMIT 1`,
+      ['out', timestamp, ...candidates],
+    );
+    return Boolean(row);
   },
 
   async clear(bareJid?: string): Promise<void> {

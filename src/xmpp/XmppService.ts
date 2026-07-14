@@ -15,7 +15,9 @@ import type {
   XmppPendingAction,
   XmppQuickResponse,
 } from '@/types/xmpp';
-import { notifyXmppMessage } from '@/xmpp/notifications';
+import { getStoredExpoPushToken, notifyXmppMessage } from '@/xmpp/notifications';
+import { PushStatus } from '@/xmpp/pushStatus';
+import { ForegroundService } from '@/xmpp/ForegroundService';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { buildFormElement } from '@/xmpp/xep-0004';
 
@@ -70,6 +72,9 @@ const QUICK_RESPONSE_NS = 'urn:xmpp:quick-response:0';
 const LEGACY_QUICK_RESPONSE_NS = 'urn:xmpp:tmp:quick-response';
 const DISCO_ITEMS_NS = 'http://jabber.org/protocol/disco#items';
 const COMMAND_NS = 'http://jabber.org/protocol/commands';
+const PUSH_NS = 'urn:xmpp:push:0';
+const EXPO_PUSH_SERVICE_JID = 'expo-push.hablar.fuentelibre.org';
+const pushLog = globalThis.console;
 
 export function parseQuickResponses(stanza: Element): XmppQuickResponse[] {
   const responses: XmppQuickResponse[] = [];
@@ -146,6 +151,8 @@ export function parseMamResult(mamResult: Element, ownJid: string): XmppMessage 
     timestamp,
     direction,
     isGroup: type === 'groupchat',
+    quickResponses: parseQuickResponses(message),
+    commands: parseInlineCommands(message),
     replyTo: extractReply(message),
     oobUrl: extractOobUrl(message, body),
   };
@@ -168,6 +175,7 @@ let pendingActions = new Map<string, XmppPendingAction>();
 let accountConfig: XmppAccountConfig | null = null;
 let seenIds = new Set<string>();
 let pingTimer: ReturnType<typeof setInterval> | null = null;
+let reconnectPromise: Promise<void> | null = null;
 /** bare JID -> the set of their resources currently announcing availability. */
 let onlineResources = new Map<string, Set<string>>();
 
@@ -310,17 +318,51 @@ async function executeCommand(targetJid: string, node: string, form?: DataForm):
 
 // ── XEP-0199 Ping ──
 
+async function pingServer(jid: string, timeoutMs = 15000): Promise<void> {
+  if (!xmppClient) throw new Error('XMPP not connected');
+  await xmppClient.iqCaller.request(
+    xml('iq', { type: 'get', to: jid, id: `ping-${Date.now()}` }, xml('ping', { xmlns: 'urn:xmpp:ping' })),
+    timeoutMs,
+  );
+}
+
+async function enableExpoPushIfAvailable(): Promise<void> {
+  if (!xmppClient || connectionState !== 'online') return;
+
+  const token = await getStoredExpoPushToken();
+  if (!token) {
+    PushStatus.update({ registration: 'idle', error: null });
+    pushLog.warn('[xmpp-push] No stored Expo push token yet; skipping XEP-0357 registration');
+    return;
+  }
+
+  PushStatus.update({ registration: 'pending', error: null });
+  await xmppClient.iqCaller.request(
+    xml(
+      'iq',
+      { type: 'set', id: `push-enable-${Date.now()}` },
+      xml('enable', {
+        xmlns: PUSH_NS,
+        jid: EXPO_PUSH_SERVICE_JID,
+        node: token,
+      }),
+    ),
+    15000,
+  );
+  PushStatus.update({ registration: 'registered', error: null });
+  pushLog.warn(`[xmpp-push] XEP-0357 registered with ${EXPO_PUSH_SERVICE_JID}`);
+}
+
 function startPing(jid: string) {
   stopPing();
   pingTimer = setInterval(async () => {
     if (!xmppClient) return;
     try {
-      await xmppClient.iqCaller.request(
-        xml('iq', { type: 'get', to: jid, id: `ping-${Date.now()}` }, xml('ping', { xmlns: 'urn:xmpp:ping' })),
-        15000,
-      );
+      await pingServer(jid);
     } catch {
-      await xmppClient.disconnect().catch(() => {});
+      await xmppClient.stop().catch(() => {});
+      connectionState = 'offline';
+      notifyState();
     }
   }, 55000);
 }
@@ -415,11 +457,25 @@ async function persistAndDedupe(contactJid: string, messages: XmppMessage[]): Pr
   for (const msg of messages) {
     const mamId = msg.mamId ?? null;
     if (mamId && await XmppHistory.attachMamToRecentMessage(
-      contactJid, msg.body, msg.direction, msg.timestamp, mamId)) {
+      contactJid,
+      msg.body,
+      msg.direction,
+      msg.timestamp,
+      mamId,
+      msg.quickResponses ?? null,
+      msg.commands ?? null,
+    )) {
       continue;
     }
     const inserted = await XmppHistory.recordMessage(
-      contactJid, msg.body, msg.direction, msg.timestamp, mamId);
+      contactJid,
+      msg.body,
+      msg.direction,
+      msg.timestamp,
+      mamId,
+      msg.quickResponses ?? null,
+      msg.commands ?? null,
+    );
     if (inserted) fresh.push(msg);
   }
   fresh.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -439,7 +495,21 @@ function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
     timestamp: row.timestamp,
     direction: row.direction,
     isGroup: false,
+    quickResponses: row.quick_responses,
+    commands: row.commands,
   };
+}
+
+async function restorePendingQuickResponses(contactJid: string, messages: XmppMessage[]): Promise<void> {
+  for (const msg of messages) {
+    const quickResponses = msg.quickResponses ?? [];
+    if (quickResponses.length === 0) continue;
+    const values = quickResponses
+      .map((response) => response.value || response.label)
+      .filter(Boolean);
+    if (await XmppHistory.quickResponseWasAnswered(msg.timestamp, values)) continue;
+    addPendingActions(contactJid, msg, quickResponses, []);
+  }
 }
 
 // ── Public API ──
@@ -524,9 +594,17 @@ export const XmppService = {
     xmppClient.on('online', () => {
       connectionState = 'online';
       notifyState();
+      ForegroundService.start(config.jid).catch(() => {});
 
       // XEP-0280 Carbons
       xmppClient!.send(xml('iq', { type: 'set' }, xml('enable', { xmlns: 'urn:xmpp:carbons:2' }))).catch(() => {});
+      enableExpoPushIfAvailable().catch((error) => {
+        PushStatus.update({
+          registration: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        pushLog.warn('[xmpp-push] XEP-0357 registration failed', error);
+      });
 
       // XEP-0199 Ping
       startPing(config.jid);
@@ -684,6 +762,8 @@ export const XmppService = {
         direction: 'in',
         isMention,
         isGroup,
+        quickResponses,
+        commands,
         replyTo: extractReply(stanza),
         oobUrl: extractOobUrl(stanza, body),
       };
@@ -695,7 +775,14 @@ export const XmppService = {
       addPendingActions(platformId, msg, quickResponses, commands);
       // Cache it so the next catch-up starts from here instead of refetching.
       XmppHistory.recordMessage(
-        platformId, msg.body, 'in', msg.timestamp, null).catch(() => {});
+        platformId,
+        msg.body,
+        'in',
+        msg.timestamp,
+        null,
+        quickResponses,
+        commands,
+      ).catch(() => {});
     });
 
     try {
@@ -707,12 +794,43 @@ export const XmppService = {
     }
   },
 
+  async reconnectIfNeeded(config: XmppAccountConfig) {
+    accountConfig = config;
+
+    if (reconnectPromise) return reconnectPromise;
+    if (connectionState === 'connecting') return;
+
+    if (xmppClient && connectionState === 'online') {
+      try {
+        await pingServer(config.jid, 5000);
+        return;
+      } catch {
+        connectionState = 'offline';
+        notifyState();
+      }
+    }
+
+    reconnectPromise = (async () => {
+      stopPing();
+      if (xmppClient) {
+        await xmppClient.stop().catch(() => {});
+        xmppClient = null;
+      }
+      await this.connect(config);
+    })().finally(() => {
+      reconnectPromise = null;
+    });
+
+    return reconnectPromise;
+  },
+
   async disconnect() {
     stopPing();
     if (xmppClient) {
       await xmppClient.stop().catch(() => {});
       xmppClient = null;
     }
+    await ForegroundService.stop().catch(() => {});
     connectionState = 'disconnected';
     notifyState();
     pendingActions = new Map();
@@ -785,9 +903,38 @@ export const XmppService = {
    * Messages already cached locally — render these immediately, before any
    * network round-trip.
    */
-  async loadCachedHistory(contactJid: string, limit = 50): Promise<XmppMessage[]> {
+  async loadCachedHistory(
+    contactJid: string,
+    limit = 50,
+    opts: { restoreActions?: boolean } = {},
+  ): Promise<XmppMessage[]> {
     const rows = await XmppHistory.getRecent(contactJid, limit);
-    return rows.map((row) => rowToMessage(row, contactJid));
+    const history = rows.map((row) => rowToMessage(row, contactJid));
+    if (opts.restoreActions ?? true) {
+      await restorePendingQuickResponses(contactJid, history);
+    }
+    return history;
+  },
+
+  async restoreCachedActions(contactJid: string, limit = 50): Promise<void> {
+    const rows = await XmppHistory.getRecent(contactJid, limit);
+    await restorePendingQuickResponses(contactJid, rows.map((row) => rowToMessage(row, contactJid)));
+  },
+
+  /**
+   * One cached preview per roster item, used by the conversation list before
+   * the user opens a chat or MAM catch-up has completed.
+   */
+  async loadCachedPreviews(contactJids: string[]): Promise<Map<string, XmppMessage>> {
+    const rows = await XmppHistory.getLatestForContacts(contactJids);
+    const previews = new Map<string, XmppMessage>();
+    for (const row of rows) {
+      const current = previews.get(row.bare_jid);
+      if (!current || new Date(row.timestamp).getTime() >= new Date(current.timestamp).getTime()) {
+        previews.set(row.bare_jid, rowToMessage(row, row.bare_jid));
+      }
+    }
+    return previews;
   },
 
   /**

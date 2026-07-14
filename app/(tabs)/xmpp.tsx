@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,8 +11,9 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
+import { XmppService } from '@/xmpp/XmppService';
 import { Colors } from '@/constants/theme';
-import type { XmppContact } from '@/types/xmpp';
+import type { XmppContact, XmppMessage } from '@/types/xmpp';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -38,14 +39,34 @@ function presenceLabel(presence: string): string {
   return isOnline(presence) ? 'En línea' : 'Desconectado';
 }
 
+function latestMessage(a?: XmppMessage, b?: XmppMessage): XmppMessage | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return new Date(a.timestamp).getTime() >= new Date(b.timestamp).getTime() ? a : b;
+}
+
 export default function XmppScreen() {
-  const { state, contacts, messages, connect, disconnect, account, isConfigured } = useXmpp();
+  const {
+    state,
+    contacts,
+    messages,
+    connect,
+    disconnect,
+    account,
+    isConfigured,
+  } = useXmpp();
   const [jid, setJid] = useState('');
   const [password, setPassword] = useState('');
   const [server, setServer] = useState('wss://hablar.fuentelibre.org:5281/xmpp-websocket');
   const [resource, setResource] = useState('gtk-llm-chat');
+  const [cachedPreviews, setCachedPreviews] = useState<Map<string, XmppMessage>>(() => new Map());
+  const [loadingPreviews, setLoadingPreviews] = useState(false);
   const router = useRouter();
   const autoConnectAttempted = useRef(false);
+  const contactJidsKey = useMemo(
+    () => contacts.map((contact) => contact.jid).sort().join('\n'),
+    [contacts],
+  );
   // The header sits at the top of the screen with no navigation bar above it,
   // so it must clear the status bar itself.
   const insets = useSafeAreaInsets();
@@ -68,6 +89,26 @@ export default function XmppScreen() {
       }).catch(() => {});
     }
   }, [state, router]);
+
+  useEffect(() => {
+    const contactJids = contactJidsKey ? contactJidsKey.split('\n') : [];
+    if (state !== 'online' || contactJids.length === 0) {
+      setCachedPreviews(new Map());
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingPreviews(true);
+    XmppService.loadCachedPreviews(contactJids)
+      .then((previews) => {
+        if (!cancelled) setCachedPreviews(previews);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPreviews(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [state, contactJidsKey]);
 
   const handleConnect = useCallback(async () => {
     if (!jid || !password) {
@@ -104,6 +145,7 @@ export default function XmppScreen() {
             <View style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
               <Text style={styles.headerJid}>{account.jid}</Text>
+              {loadingPreviews && <ActivityIndicator size="small" color={Colors.primary} />}
             </View>
           </View>
           <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn}>
@@ -123,7 +165,10 @@ export default function XmppScreen() {
           }
           renderItem={({ item }: { item: XmppContact }) => {
             const msgHistory = messages.get(item.jid) || [];
-            const lastMsg = msgHistory[msgHistory.length - 1];
+            const lastMsg = latestMessage(
+              msgHistory[msgHistory.length - 1],
+              cachedPreviews.get(item.jid),
+            );
             return (
               <TouchableOpacity
                 style={styles.contactCard}

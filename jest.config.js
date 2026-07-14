@@ -1,5 +1,6 @@
 module.exports = {
   preset: 'jest-expo',
+  setupFiles: ['<rootDir>/jest.setup.js'],
   setupFilesAfterEnv: ['@testing-library/jest-native/extend-expect'],
   // @xmpp/* and ltx ship ESM only — jest-expo's default list doesn't cover them.
   transformIgnorePatterns: [

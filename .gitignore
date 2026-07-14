@@ -1,4 +1,7 @@
 node_modules/
+*-service-account*.json
+*firebase-admin*.json
+*fcm*.json
 .expo/
 dist/
 web-build/

@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1037069524660",
+    "project_id": "floralescobija",
+    "storage_bucket": "floralescobija.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1037069524660:android:fe6f187e280951a0b101e1",
+        "android_client_info": {
+          "package_name": "org.fuentelibre.gtk_llm_chat"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1037069524660-1fc5rjf4uc1c5ner2a7pun18gm9jaluo.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVp4ulNUevDyOzCXYwUMozNHdJgNIb6WU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1037069524660-1fc5rjf4uc1c5ner2a7pun18gm9jaluo.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
