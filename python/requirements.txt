@@ -1,0 +1,5 @@
+llm>=0.20
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlite-utils>=3.37
+python-ulid>=2.0

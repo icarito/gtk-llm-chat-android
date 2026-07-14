@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "gtk-llm-chat-android",
+    "slug": "gtk-llm-chat-android",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "scheme": "gtk-llm-chat",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0A0E14",
+      "image": "./assets/splash.png",
+      "resizeMode": "contain"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0E14"
+      },
+      "package": "org.fuentelibre.gtk_llm_chat",
+      "versionCode": 2,
+      "permissions": []
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "name": "gtk-llm-chat-android",
+      "shortName": "gtk-llm-chat",
+      "description": "Mobile companion for gtk-llm-chat",
+      "themeColor": "#0A0E14",
+      "backgroundColor": "#0A0E14",
+      "display": "standalone",
+      "orientation": "any"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 29,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
