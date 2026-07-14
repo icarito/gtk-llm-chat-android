@@ -353,7 +353,7 @@ interface MamPage {
  */
 async function runMamQuery(
   contactJid: string,
-  opts: { start?: string; end?: string; after?: string } = {},
+  opts: { start?: string; end?: string; after?: string; latest?: boolean } = {},
 ): Promise<MamPage> {
   if (!xmppClient || !accountConfig) return { messages: [], complete: true, last: null };
 
@@ -372,8 +372,9 @@ async function runMamQuery(
 
   const rsm: Element[] = [xml('max', {}, String(MAM_PAGE_SIZE))];
   if (opts.after) rsm.push(xml('after', {}, opts.after));
-  // Paging backwards (scroll-to-load-older) wants the newest page of the range.
-  if (opts.end && !opts.after) rsm.push(xml('before', {}));
+  // Paging backwards (scroll-to-load-older or cold cache bootstrap) wants the
+  // newest page of the range. Without this, MAM returns the oldest page first.
+  if ((opts.end || opts.latest) && !opts.after) rsm.push(xml('before', {}));
 
   try {
     const reply = await xmppClient.iqCaller.request(
@@ -805,9 +806,12 @@ export const XmppService = {
     // Match GTK: re-fetch before our newest cached message with a generous
     // overlap so live-cache rows and action metadata get reconciled with MAM.
     const latest = await XmppHistory.getLatestTimestamp(contactJid);
-    const start = latest
-      ? new Date(new Date(latest).getTime() - OVERLAP_MS).toISOString()
-      : undefined;
+    if (!latest) {
+      const result = await runMamQuery(contactJid, { latest: true });
+      return persistAndDedupe(contactJid, result.messages);
+    }
+
+    const start = new Date(new Date(latest).getTime() - OVERLAP_MS).toISOString();
 
     const collected: XmppMessage[] = [];
     let after: string | undefined;

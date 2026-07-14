@@ -249,42 +249,6 @@ export default function XmppChatScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={90}
       >
-        <FlatList
-          ref={flatListRef}
-          inverted
-          data={inverted}
-          keyExtractor={(item, index) => `${item.id}-${index}`}
-          renderItem={renderMessage}
-          contentContainerStyle={styles.listContent}
-          extraData={msgCount}
-          // Inverted: the "end" of the list is the TOP of the screen, i.e. the
-          // oldest message — so reaching it is what pulls in more history.
-          onEndReached={handleLoadOlder}
-          onEndReachedThreshold={0.3}
-          ListFooterComponent={
-            msgCount === 0 ? null : (
-              <View style={styles.historyHeader}>
-                {loadingOlder || syncing ? (
-                  <ActivityIndicator size="small" color={Colors.primary} />
-                ) : exhausted ? (
-                  <Text style={styles.historyHeaderText}>Inicio de la conversación</Text>
-                ) : (
-                  <TouchableOpacity onPress={handleLoadOlder}>
-                    <Text style={styles.loadMamText}>Cargar mensajes anteriores</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )
-          }
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="chatbubbles" size={48} color={Colors.textDim} />
-              <Text style={styles.emptyText}>No hay mensajes aún.</Text>
-              <Text style={styles.emptySubtext}>Envía un mensaje para empezar.</Text>
-            </View>
-          }
-        />
-
         <View style={styles.agentToolbar}>
           <View style={styles.statusStrip}>
             <View style={styles.statusMain}>
@@ -393,6 +357,42 @@ export default function XmppChatScreen() {
           )}
         </View>
 
+        <FlatList
+          ref={flatListRef}
+          inverted
+          data={inverted}
+          keyExtractor={(item, index) => `${item.id}-${index}`}
+          renderItem={renderMessage}
+          contentContainerStyle={styles.listContent}
+          extraData={msgCount}
+          // Inverted: the "end" of the list is the TOP of the screen, i.e. the
+          // oldest message — so reaching it is what pulls in more history.
+          onEndReached={handleLoadOlder}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            msgCount === 0 ? null : (
+              <View style={styles.historyHeader}>
+                {loadingOlder || syncing ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : exhausted ? (
+                  <Text style={styles.historyHeaderText}>Inicio de la conversación</Text>
+                ) : (
+                  <TouchableOpacity onPress={handleLoadOlder}>
+                    <Text style={styles.loadMamText}>Cargar mensajes anteriores</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )
+          }
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="chatbubbles" size={48} color={Colors.textDim} />
+              <Text style={styles.emptyText}>No hay mensajes aún.</Text>
+              <Text style={styles.emptySubtext}>Envía un mensaje para empezar.</Text>
+            </View>
+          }
+        />
+
         {state !== 'online' && (
           <View style={styles.disconnectedBar}>
             <Text style={styles.disconnectedText}>Desconectado — reconectando...</Text>
@@ -449,10 +449,11 @@ const styles = StyleSheet.create({
   timestampMine: { color: 'rgba(255,255,255,0.7)' },
   agentToolbar: {
     backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.surfaceBorder,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
     paddingHorizontal: 8,
     paddingTop: 8,
+    paddingBottom: 8,
     gap: 8,
   },
   statusStrip: {
@@ -526,7 +527,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingBottom: 8,
     flexWrap: 'wrap',
   },
   bypassButton: {
