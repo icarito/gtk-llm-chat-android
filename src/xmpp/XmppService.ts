@@ -108,6 +108,10 @@ const DISCO_ITEMS_NS = 'http://jabber.org/protocol/disco#items';
 const COMMAND_NS = 'http://jabber.org/protocol/commands';
 const PUBSUB_EVENT_NS = 'http://jabber.org/protocol/pubsub#event';
 const PUSH_NS = 'urn:xmpp:push:0';
+// XEP-0066 (OOB): envoltorio del link de un adjunto. XEP-0363 (HTTP Upload):
+// descubrimiento del componente y pedido de slot.
+const OOB_NS = 'jabber:x:oob';
+const HTTP_UPLOAD_NS = 'urn:xmpp:http:upload:0';
 const EXPO_PUSH_SERVICE_JID = 'expo-push.hablar.fuentelibre.org';
 // Telemetría del agente (contexto, tokens, coste, modelo). Va por PEP y no en el
 // <status> de la presencia: el status es texto para humanos —cualquier cliente lo
@@ -321,6 +325,9 @@ let contactsMap = new Map<string, XmppContact>();
 let messagesMap = new Map<string, XmppMessage[]>();
 let pendingActions = new Map<string, XmppPendingAction>();
 let accountConfig: XmppAccountConfig | null = null;
+// JID del componente XEP-0363. undefined = sin descubrir; null = el server no
+// tiene uno (no reintentar el disco en cada envío).
+let uploadHostCache: string | null | undefined = undefined;
 let seenIds = new Set<string>();
 let pingTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectPromise: Promise<void> | null = null;
@@ -497,6 +504,84 @@ function noteText(command: Element): string {
   const notes = command.getChildren('note');
   const parts = notes.map((note) => note.text()).filter(Boolean);
   return parts.join('\n') || 'Command completed.';
+}
+
+/**
+ * JID del componente XEP-0363 del server (cacheado). null si no tiene uno.
+ *
+ * disco#items del dominio -> disco#info de cada item -> el que anuncie la
+ * feature urn:xmpp:http:upload:0. TRAMPA: el componente vive en un subdominio
+ * (upload.dominio), NO en el dominio base — hay que descubrirlo.
+ */
+async function resolveUploadHost(): Promise<string | null> {
+  if (uploadHostCache !== undefined) return uploadHostCache;
+  const domain = accountConfig?.jid?.split('@')[1];
+  if (!xmppClient || !domain) return null;
+  try {
+    const items = await xmppClient.iqCaller.request(
+      xml('iq', { type: 'get', to: domain, id: `disco-items-${Date.now().toString(36)}` },
+        xml('query', { xmlns: DISCO_ITEMS_NS })),
+      15000,
+    );
+    const query = items.getChild('query', DISCO_ITEMS_NS);
+    const candidates = (query?.getChildren('item') ?? [])
+      .map((item: Element) => item.attrs.jid as string | undefined)
+      .filter((jid): jid is string => Boolean(jid));
+    for (const candidate of candidates) {
+      try {
+        const info = await xmppClient.iqCaller.request(
+          xml('iq', { type: 'get', to: candidate, id: `disco-info-${Date.now().toString(36)}` },
+            xml('query', { xmlns: DISCO_INFO_NS })),
+          15000,
+        );
+        const features = info.getChild('query', DISCO_INFO_NS)?.getChildren('feature') ?? [];
+        if (features.some((f: Element) => f.attrs.var === HTTP_UPLOAD_NS)) {
+          uploadHostCache = candidate;
+          return candidate;
+        }
+      } catch {
+        // Ese componente no respondió: seguir con el siguiente.
+      }
+    }
+  } catch {
+    // El server no respondió el disco: no reintentar en cada envío.
+  }
+  uploadHostCache = null;
+  return null;
+}
+
+/** Pide un slot de subida (XEP-0363): put/get URLs + headers para el PUT. */
+async function requestUploadSlot(
+  host: string,
+  filename: string,
+  size: number,
+  contentType: string,
+): Promise<{ putUrl: string; getUrl: string; headers: Record<string, string> }> {
+  if (!xmppClient) throw new Error('XMPP no conectado');
+  const result = await xmppClient.iqCaller.request(
+    xml('iq', { type: 'get', to: host, id: `upload-${Date.now().toString(36)}` },
+      xml('request', {
+        xmlns: HTTP_UPLOAD_NS,
+        filename,
+        size: String(size),
+        'content-type': contentType,
+      })),
+    30000,
+  );
+  const slot = result.getChild('slot', HTTP_UPLOAD_NS);
+  const put = slot?.getChild('put');
+  const get = slot?.getChild('get');
+  // Las URLs vienen en ATRIBUTOS (url=), no como texto del elemento.
+  const putUrl = put?.attrs.url as string | undefined;
+  const getUrl = get?.attrs.url as string | undefined;
+  if (!putUrl || !getUrl) throw new Error('El servidor no devolvió un slot válido');
+  const headers: Record<string, string> = {};
+  for (const header of put?.getChildren('header') ?? []) {
+    const name = header.attrs.name as string | undefined;
+    const value = header.text();
+    if (name && value) headers[name] = value;
+  }
+  return { putUrl, getUrl, headers };
 }
 
 async function executeCommand(targetJid: string, node: string, form?: DataForm): Promise<string> {
@@ -1328,6 +1413,9 @@ export const XmppService = {
     await ForegroundService.stop().catch(() => {});
     connectionState = 'disconnected';
     notifyState();
+    // Otra cuenta puede estar en otro servidor: re-descubrir el componente
+    // de subida en la próxima sesión.
+    uploadHostCache = undefined;
     pendingActions = new Map();
     notifyPendingActions();
     accountConfig = null;
@@ -1354,6 +1442,60 @@ export const XmppService = {
     // Cached with no mam_id; the archive copy will be matched onto this row.
     XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
     return id;
+  },
+
+  /**
+   * Sube un archivo por XEP-0363 y lo envía como link OOB (XEP-0066).
+   *
+   * `blob` son los bytes ya leídos (el picker/FS los provee). Devuelve el
+   * get_uri publicado. Igual que el plugin y el cliente GTK: el link va en el
+   * body Y en <x jabber:x:oob>, para que lo vea cualquier cliente.
+   */
+  async sendFile(
+    to: string,
+    blob: Blob,
+    filename: string,
+    contentType = 'application/octet-stream',
+    type: 'chat' | 'groupchat' = 'chat',
+  ): Promise<string> {
+    if (!xmppClient) throw new Error('XMPP no conectado');
+    const host = await resolveUploadHost();
+    if (!host) throw new Error('El servidor no tiene servicio de subida (XEP-0363)');
+
+    const slot = await requestUploadSlot(host, filename, blob.size, contentType);
+    const putResponse = await fetch(slot.putUrl, {
+      method: 'PUT',
+      body: blob,
+      headers: { 'Content-Type': contentType, ...slot.headers },
+    });
+    if (!putResponse.ok) {
+      throw new Error(`La subida falló (HTTP ${putResponse.status})`);
+    }
+
+    const id = `oc-${Date.now().toString(36)}`;
+    const timestamp = new Date().toISOString();
+    await xmppClient.send(
+      xml(
+        'message',
+        { type, to, id },
+        xml('body', {}, slot.getUrl),
+        xml('x', { xmlns: OOB_NS }, xml('url', {}, slot.getUrl)),
+      ),
+    );
+    addMessageToMap({
+      id,
+      from: accountConfig?.jid ?? '',
+      to,
+      type,
+      body: slot.getUrl,
+      timestamp,
+      direction: 'out',
+      isGroup: type === 'groupchat',
+      oobUrl: slot.getUrl,
+    });
+    XmppHistory.recordMessage(to, slot.getUrl, 'out', timestamp, null, null, null, null, slot.getUrl)
+      .catch(() => {});
+    return slot.getUrl;
   },
 
   async answerPendingAction(actionId: string): Promise<void> {
