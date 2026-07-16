@@ -61,6 +61,8 @@ export interface XmppInlineCommand {
   node: string;
   name: string;
   style?: XmppButtonStyle;
+  /** Epoch ms tras el cual el botón caduca (lo emite el plugin, igual que en <response>). */
+  expiresAtMs?: number;
 }
 
 export interface XmppPendingAction {

@@ -190,7 +190,16 @@ export function parseInlineCommands(stanza: Element): XmppInlineCommand[] {
       const node = item.attrs.node as string | undefined;
       const name = item.attrs.name as string | undefined;
       const style = normalizeButtonStyle(item.attrs.style);
-      if (jid && node && name) commands.push({ jid, node, name, ...(style ? { style } : {}) });
+      const expiresAtMs = parseExpiresAtMs(item.attrs['expires-at-ms']);
+      if (jid && node && name) {
+        commands.push({
+          jid,
+          node,
+          name,
+          ...(style ? { style } : {}),
+          ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),
+        });
+      }
     }
   }
   return commands;
@@ -862,9 +871,19 @@ async function restorePendingQuickResponses(contactJid: string, messages: XmppMe
     const freshCmd = commands.filter((c) => !isRestoredActionStale(msg.timestamp, c));
     if (freshQr.length === 0 && freshCmd.length === 0) continue;
 
-    if (freshQr.length > 0) {
-      const values = freshQr.map((response) => response.value || response.label).filter(Boolean);
-      if (await XmppHistory.quickResponseWasAnswered(contactJid, msg.timestamp, values)) continue;
+    // ¿Ya se respondió? Se comprueba con los values de los quick-responses
+    // (una respuesta deja un mensaje saliente con ese texto). OJO: un
+    // command-item se contesta por IQ y NO deja rastro saliente, así que para
+    // ellos esta comprobación no sirve — de ahí que se miren SIEMPRE los
+    // values del mensaje, aunque luego se prefieran los comandos.
+    const answerValues = quickResponses
+      .map((response) => response.value || response.label)
+      .filter(Boolean);
+    if (answerValues.length > 0
+      && await XmppHistory.quickResponseWasAnswered(contactJid, msg.timestamp, answerValues)) {
+      // Resuelto: limpiar también el cache para que no vuelva a intentarlo.
+      XmppHistory.markResolvedByStanzaId(contactJid, msg.id).catch(() => {});
+      continue;
     }
     // Preferir command-items (IQ) sobre quick-responses (texto) cuando el
     // mensaje trae ambos — paridad con el GTK. Si hay comandos, se restauran
