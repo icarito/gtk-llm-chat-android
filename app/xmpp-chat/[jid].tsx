@@ -10,17 +10,31 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
-import { formatAgentActivity, formatAgentDetails, parseAgentStatus } from '@/xmpp/agentStatus';
+import { setActiveChatJid } from '@/xmpp/notifications';
+import { formatAgentActivity, parseAgentStatus } from '@/xmpp/agentStatus';
 import { Colors } from '@/constants/theme';
-import type { XmppMessage, XmppPendingAction } from '@/types/xmpp';
+import type { XmppButtonStyle, XmppInlineCommand, XmppMessage, XmppPendingAction } from '@/types/xmpp';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
+
+/** Color de fondo del botón según su estilo (paridad con Telegram/GTK). */
+function pillBackgroundForStyle(style?: XmppButtonStyle): string {
+  switch (style) {
+    case 'success': return Colors.success;
+    case 'danger': return Colors.error;
+    case 'secondary': return Colors.secondary;
+    case 'primary':
+    default: return Colors.primary;
+  }
+}
 
 /** Same message, seen twice: once live, once replayed from the archive. */
 const DEDUPE_WINDOW_MS = 30_000;
@@ -89,6 +103,32 @@ function pushStatusLabel(
   return 'Push: pendiente';
 }
 
+function formatCount(value: number | string): string {
+  try {
+    const number = typeof value === 'string'
+      ? parseInt(value.replace(/,/g, ''), 10)
+      : value;
+    if (!Number.isFinite(number)) return String(value);
+    if (Math.abs(number) >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+    if (Math.abs(number) >= 1_000) return `${(number / 1_000).toFixed(1)}k`;
+    return String(number);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatCost(value: number | string): string {
+  try {
+    const number = typeof value === 'string'
+      ? parseFloat(value.replace(/[$,]/g, ''))
+      : value;
+    if (!Number.isFinite(number)) return String(value);
+    return number < 1 ? `$${number.toFixed(4)}` : `$${number.toFixed(2)}`;
+  } catch {
+    return String(value);
+  }
+}
+
 export default function XmppChatScreen() {
   const { jid } = useLocalSearchParams<{ jid: string }>();
   const decodedJid = decodeURIComponent(jid || '');
@@ -114,8 +154,19 @@ export default function XmppChatScreen() {
   const [agentControlsOpen, setAgentControlsOpen] = useState(false);
   const [bypassEnabled, setBypassEnabled] = useState(false);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
+  const [availableCommands, setAvailableCommands] = useState<XmppInlineCommand[]>([]);
+  const [loadingCommands, setLoadingCommands] = useState(false);
+  const [commandBusyNode, setCommandBusyNode] = useState<string | null>(null);
+  const [showPendingPopover, setShowPendingPopover] = useState(false);
+  const [telemetry, setTelemetry] = useState<Record<string, unknown>>({});
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
   const hasCachedHistoryRef = useRef(false);
+
+  // Suppress local notifications while this chat is open
+  useEffect(() => {
+    setActiveChatJid(decodedJid);
+    return () => setActiveChatJid(null);
+  }, [decodedJid]);
 
   // Paint the cache immediately on open, then catch up with the archive.
   useEffect(() => {
@@ -142,6 +193,11 @@ export default function XmppChatScreen() {
               if (!cancelled) setRehydrating(false);
             });
         });
+      } catch (error) {
+        // Sin esto, un fallo aquí (p.ej. el cache SQLite no abrió) deja la
+        // pantalla en blanco para siempre y sin rastro: el chat se ve como si
+        // no tuviera historial en vez de mostrar que algo salió mal.
+        console.warn('[xmpp-chat] loadCachedHistory failed', error);
       } finally {
         if (!cancelled && cancelIdle === null) setRehydrating(false);
       }
@@ -176,6 +232,11 @@ export default function XmppChatScreen() {
         setHistory((prev) => (prev.length > recent.length
           ? mergeMessages(prev, recent)  // user already paged further back
           : recent));
+      } catch (error) {
+        // Un MAM IQ que falla (timeout, stream error) o el cache SQLite roto
+        // no debe dejar la conversación en blanco sin rastro — ver el mismo
+        // catch en el efecto de arriba.
+        console.warn('[xmpp-chat] syncHistory failed', error);
       } finally {
         if (!cancelled) setSyncing(false);
       }
@@ -253,17 +314,72 @@ export default function XmppChatScreen() {
     [contacts, decodedJid],
   );
   const agentStatus = useMemo(() => parseAgentStatus(contact?.status), [contact?.status]);
-  const agentDetails = useMemo(() => formatAgentDetails(agentStatus), [agentStatus]);
-  const statusDetails = useMemo(() => {
-    const details = [
-      pushStatusLabel(pushStatus.token, pushStatus.registration),
-      ...agentDetails,
-    ];
-    if (pushStatus.error) {
-      details.push(`Push error: ${pushStatus.error.slice(0, 48)}`);
+
+  // Telemetría por PEP (contexto, modelo, coste). Nos suscribimos a los eventos,
+  // y además PEDIMOS el valor actual al abrir: los eventos sólo llegan cuando el
+  // agente publica algo nuevo, así que uno que lleva rato quieto no emitiría nada
+  // y la barra se quedaría vacía para siempre.
+  useEffect(() => {
+    const cached = XmppService.getAgentTelemetry(decodedJid);
+    if (cached) setTelemetry(cached);
+    const unsub = XmppService.onTelemetry((jid, data) => {
+      if (jid === decodedJid) setTelemetry({ ...data });
+    });
+    XmppService.fetchAgentTelemetry(decodedJid);
+    return () => { unsub(); };
+  }, [decodedJid]);
+
+  const contextFraction = useMemo(() => {
+    const used = telemetry.context_used as number | undefined;
+    const max = telemetry.context_max as number | undefined;
+    if (used === undefined || !max) return null;
+    return Math.max(0, Math.min(1, used / max));
+  }, [telemetry]);
+
+  const contextBarColor = useMemo(() => {
+    const fraction = contextFraction;
+    if (fraction === null) return Colors.primary;
+    if (fraction > 0.9) return Colors.error;
+    if (fraction > 0.75) return Colors.warning;
+    return Colors.success;
+  }, [contextFraction]);
+
+  const contextLabel = useMemo(() => {
+    const fraction = contextFraction;
+    if (fraction === null) return null;
+    const used = telemetry.context_used as number;
+    const max = telemetry.context_max as number;
+    return `Contexto: ${Math.round(fraction * 100)}% (${Math.round(used / 1000)}k / ${Math.round((max as number) / 1000)}k tokens)`;
+  }, [contextFraction, telemetry]);
+
+  const modelBadge = useMemo(() => {
+    const model = telemetry.model as string | undefined;
+    if (!model) return null;
+    return String(model).split('/').pop() || model;
+  }, [telemetry]);
+
+  const sessionStats = useMemo(() => {
+    const parts: string[] = [];
+    const total = telemetry.tokens_total as number | undefined;
+    const requests = telemetry.tokens_requests as number | undefined;
+    if (total !== undefined) {
+      parts.push(`Sesión: ${formatCount(total)} tok`);
+      if (requests !== undefined) parts.push(`${requests} req`);
     }
+    const cost = telemetry.cost;
+    if (cost !== undefined) {
+      parts.push(`Cost: ${formatCost(cost as number | string)}`);
+    }
+    return parts;
+  }, [telemetry]);
+
+  const statusDetails = useMemo(() => {
+    const details: string[] = [];
+    const pushLabel = pushStatusLabel(pushStatus.token, pushStatus.registration);
+    if (pushLabel) details.push(pushLabel);
+    if (sessionStats.length > 0) details.push(...sessionStats);
     return details;
-  }, [agentDetails, pushStatus]);
+  }, [pushStatus, sessionStats]);
 
   // The list renders inverted (newest at the bottom, growing upward), so the
   // latest message is where the viewport already sits — no scrollToEnd, no
@@ -277,7 +393,7 @@ export default function XmppChatScreen() {
 
   // Auto-connect without params
   useEffect(() => {
-    if (isConfigured && state === 'disconnected') {
+    if (isConfigured && (state === 'disconnected' || state === 'offline')) {
       connect('', '', '', '').catch(() => {});
     }
   }, [isConfigured, state, connect]);
@@ -317,6 +433,39 @@ export default function XmppChatScreen() {
     }
   }, [bypassEnabled, decodedJid, setApprovalBypass]);
 
+  const handleRunCommand = useCallback(async (command: XmppInlineCommand) => {
+    setCommandBusyNode(command.node);
+    setControlNotice(null);
+    try {
+      const result = await XmppService.runAdhocCommand(command.jid || decodedJid, command.node);
+      setControlNotice(result || `Comando ejecutado: ${command.name}`);
+    } catch (err) {
+      setControlNotice(String(err));
+    } finally {
+      setCommandBusyNode(null);
+    }
+  }, [decodedJid]);
+
+  useEffect(() => {
+    if (state !== 'online') {
+      setAvailableCommands([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCommands(true);
+    XmppService.listAdhocCommands(decodedJid)
+      .then((commands) => {
+        if (!cancelled) setAvailableCommands(commands);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableCommands([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCommands(false);
+      });
+    return () => { cancelled = true; };
+  }, [decodedJid, state]);
+
   const renderMessage = useCallback(
     ({ item }: { item: XmppMessage }) => {
       const isMine = item.direction === 'out';
@@ -343,9 +492,22 @@ export default function XmppChatScreen() {
     <>
       <Stack.Screen
         options={{
-          headerTitle: decodedJid,
+          headerTitle: contact?.name || decodedJid,
           headerStyle: { backgroundColor: Colors.surface },
           headerTintColor: Colors.text,
+          headerRight: () => (
+            <View style={styles.headerRight}>
+              <View
+                style={[
+                  styles.headerDot,
+                  { backgroundColor: state === 'online' ? Colors.success : Colors.error },
+                ]}
+              />
+              <Text style={styles.headerStatus}>
+                {state === 'online' ? 'Conectado' : state === 'connecting' ? 'Conectando' : 'Desconectado'}
+              </Text>
+            </View>
+          ),
         }}
       />
       <KeyboardAvoidingView
@@ -365,7 +527,23 @@ export default function XmppChatScreen() {
               <Text style={styles.statusActivity} numberOfLines={1}>
                 {formatAgentActivity(agentStatus.activity)}
               </Text>
+              {modelBadge && (
+                <View style={styles.modelBadge}>
+                  <Text style={styles.modelBadgeText}>{modelBadge}</Text>
+                </View>
+              )}
             </View>
+            {contextFraction !== null && (
+              <View style={styles.contextBar}>
+                <View style={[styles.contextFill, {
+                  width: `${Math.round(contextFraction * 100)}%`,
+                  backgroundColor: contextBarColor,
+                }]} />
+                {contextLabel && (
+                  <Text style={styles.contextBarLabel} numberOfLines={1}>{contextLabel}</Text>
+                )}
+              </View>
+            )}
             {statusDetails.length > 0 && (
               <ScrollView
                 horizontal
@@ -381,18 +559,23 @@ export default function XmppChatScreen() {
             )}
           </View>
 
-          <TouchableOpacity
-            style={styles.agentControlsToggle}
-            onPress={() => setAgentControlsOpen((open) => !open)}
-          >
-            <Ionicons name="options-outline" size={16} color={Colors.textDim} />
-            <Text style={styles.agentControlsToggleText}>Controles del agente</Text>
-            <Ionicons
-              name={agentControlsOpen ? 'chevron-down' : 'chevron-forward'}
-              size={16}
-              color={Colors.textDim}
-            />
-          </TouchableOpacity>
+          <View style={styles.statusFooter}>
+            <Text style={styles.connectionLabel} numberOfLines={1}>
+              {decodedJid}
+            </Text>
+            <TouchableOpacity
+              style={styles.agentControlsToggle}
+              onPress={() => setAgentControlsOpen((open) => !open)}
+            >
+              <Ionicons name="options-outline" size={16} color={Colors.textDim} />
+              <Text style={styles.agentControlsToggleText}>Controles</Text>
+              <Ionicons
+                name={agentControlsOpen ? 'chevron-down' : 'chevron-forward'}
+                size={14}
+                color={Colors.textDim}
+              />
+            </TouchableOpacity>
+          </View>
 
           {agentControlsOpen && (
             <View style={styles.agentControlsPanel}>
@@ -410,6 +593,33 @@ export default function XmppChatScreen() {
                   Bypass approvals
                 </Text>
               </TouchableOpacity>
+              {loadingCommands && (
+                <View style={styles.commandLoadingRow}>
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                  <Text style={styles.commandHint}>Cargando comandos XMPP...</Text>
+                </View>
+              )}
+              {!loadingCommands && availableCommands.length > 0 && (
+                <View style={styles.commandGrid}>
+                  {availableCommands.map((command) => (
+                    <TouchableOpacity
+                      key={command.node}
+                      style={styles.commandButton}
+                      disabled={state !== 'online' || commandBusyNode !== null}
+                      onPress={() => handleRunCommand(command)}
+                    >
+                      {commandBusyNode === command.node ? (
+                        <ActivityIndicator size="small" color={Colors.background} />
+                      ) : (
+                        <Text style={styles.commandButtonText} numberOfLines={1}>{command.name}</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              {!loadingCommands && availableCommands.length === 0 && (
+                <Text style={styles.commandHint}>Sin comandos ad-hoc disponibles para este contacto.</Text>
+              )}
               {controlNotice && (
                 <Text
                   style={[
@@ -480,9 +690,27 @@ export default function XmppChatScreen() {
                   ? `Response needed (${pendingGroups.length})`
                   : 'Response needed'}
               </Text>
-              <Text style={styles.pendingTime}>
-                {new Date(visiblePending.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </Text>
+              <View style={styles.pendingHeaderRight}>
+                <Text style={styles.pendingTime}>
+                  {new Date(visiblePending.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+                {pendingGroups.length > 1 && (
+                  <TouchableOpacity
+                    style={styles.pendingCounter}
+                    onPress={() => setShowPendingPopover(true)}
+                  >
+                    <Text style={styles.pendingCounterText}>{pendingGroups.length}</Text>
+                  </TouchableOpacity>
+                )}
+                {visiblePending.detail ? (
+                  <TouchableOpacity
+                    style={styles.pendingInfoBtn}
+                    onPress={() => setShowPendingPopover(true)}
+                  >
+                    <Ionicons name="information-circle-outline" size={18} color={Colors.textDim} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             </View>
             <Text style={styles.pendingDetail} numberOfLines={2}>
               {visiblePending.detail}
@@ -491,7 +719,11 @@ export default function XmppChatScreen() {
               {visiblePending.actions.map((action) => (
                 <TouchableOpacity
                   key={action.id}
-                  style={[styles.actionPill, actionBusy === action.id && styles.actionPillDisabled]}
+                  style={[
+                    styles.actionPill,
+                    { backgroundColor: pillBackgroundForStyle(action.style) },
+                    actionBusy === action.id && styles.actionPillDisabled,
+                  ]}
                   disabled={state !== 'online' || actionBusy !== null}
                   onPress={() => handleAnswerAction(action)}
                 >
@@ -506,9 +738,66 @@ export default function XmppChatScreen() {
           </View>
         )}
 
-        {state !== 'online' && (
+        <Modal
+          visible={showPendingPopover}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setShowPendingPopover(false)}
+        >
+          <Pressable style={styles.modalOverlay} onPress={() => setShowPendingPopover(false)}>
+            <View style={styles.popoverContent}>
+              <View style={styles.popoverHeader}>
+                <Text style={styles.popoverTitle}>Respuestas pendientes</Text>
+                <TouchableOpacity onPress={() => setShowPendingPopover(false)}>
+                  <Ionicons name="close" size={20} color={Colors.textDim} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.popoverList}>
+                {pendingGroups.map((group, index) => (
+                  <View key={group.id} style={styles.popoverRow}>
+                    <Text style={styles.popoverRowTitle}>
+                      Pendiente {index + 1}
+                    </Text>
+                    {group.detail ? (
+                      <Text style={styles.popoverRowDetail} numberOfLines={3}>
+                        {group.detail}
+                      </Text>
+                    ) : null}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pendingActions}>
+                      {group.actions.map((action) => (
+                        <TouchableOpacity
+                          key={action.id}
+                          style={[
+                            styles.actionPill,
+                            { backgroundColor: pillBackgroundForStyle(action.style) },
+                            actionBusy === action.id && styles.actionPillDisabled,
+                          ]}
+                          disabled={state !== 'online' || actionBusy !== null}
+                          onPress={() => {
+                            setShowPendingPopover(false);
+                            handleAnswerAction(action);
+                          }}
+                        >
+                          {actionBusy === action.id ? (
+                            <ActivityIndicator size="small" color={Colors.background} />
+                          ) : (
+                            <Text style={styles.actionPillText}>{action.label}</Text>
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          </Pressable>
+        </Modal>
+
+        {state !== 'online' && state !== 'connecting' && (
           <View style={styles.disconnectedBar}>
-            <Text style={styles.disconnectedText}>Desconectado — reconectando...</Text>
+            <Text style={styles.disconnectedText}>
+              {state === 'offline' ? 'Desconectado — reconectando...' : 'Desconectado'}
+            </Text>
           </View>
         )}
 
@@ -629,6 +918,118 @@ const styles = StyleSheet.create({
   },
   actionPillDisabled: { opacity: 0.5 },
   actionPillText: { color: Colors.background, fontSize: 13, fontWeight: '700' },
+  modelBadge: {
+    backgroundColor: Colors.inputBackground,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginLeft: 4,
+  },
+  modelBadgeText: {
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  contextBar: {
+    height: 6,
+    backgroundColor: Colors.surfaceBorder,
+    borderRadius: 3,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  contextFill: {
+    height: '100%',
+    backgroundColor: Colors.primary,
+    borderRadius: 3,
+    position: 'absolute',
+    left: 0,
+    top: 0,
+  },
+  contextBarLabel: {
+    color: Colors.textDim,
+    fontSize: 10,
+    position: 'absolute',
+    right: 4,
+    top: -15,
+  },
+  statusFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
+    gap: 8,
+  },
+  connectionLabel: {
+    color: Colors.textDim,
+    fontSize: 11,
+    flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  headerDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  headerStatus: {
+    color: Colors.textDim,
+    fontSize: 12,
+  },
+  pendingHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pendingCounter: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.warning,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  pendingCounterText: {
+    color: Colors.background,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  pendingInfoBtn: {
+    padding: 2,
+  },
+  pendingPopover: {
+    position: 'absolute',
+    bottom: '100%',
+    right: 0,
+    marginBottom: 8,
+    backgroundColor: Colors.surface,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    minWidth: 280,
+    maxHeight: 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  pendingPopoverItem: {
+    padding: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+    gap: 6,
+  },
+  pendingPopoverDetail: {
+    color: Colors.textDim,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   hydrationBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -654,6 +1055,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     flexWrap: 'wrap',
+  },
+  commandLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  commandHint: {
+    color: Colors.textDim,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  commandGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    width: '100%',
+  },
+  commandButton: {
+    minHeight: 34,
+    borderRadius: 17,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primary,
+  },
+  commandButtonText: {
+    color: Colors.background,
+    fontSize: 12,
+    fontWeight: '700',
+    maxWidth: 180,
   },
   bypassButton: {
     flexDirection: 'row',
@@ -686,4 +1117,53 @@ const styles = StyleSheet.create({
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingTop: 80 },
   emptyText: { fontSize: 16, color: Colors.muted },
   emptySubtext: { fontSize: 13, color: Colors.textDim },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  popoverContent: {
+    width: '100%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    overflow: 'hidden',
+  },
+  popoverHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  popoverTitle: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  popoverList: {
+    maxHeight: '100%',
+  },
+  popoverRow: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+    gap: 6,
+  },
+  popoverRowTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  popoverRowDetail: {
+    color: Colors.textDim,
+    fontSize: 12,
+    lineHeight: 17,
+  },
 });

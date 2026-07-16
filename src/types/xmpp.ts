@@ -45,15 +45,22 @@ export interface XmppMessage {
   oobUrl?: string | null;
 }
 
+/** Button color hint (paridad con Telegram / GTK). */
+export type XmppButtonStyle = 'primary' | 'secondary' | 'success' | 'danger';
+
 export interface XmppQuickResponse {
   label: string;
   value: string;
+  style?: XmppButtonStyle;
+  /** Epoch ms tras el cual el botón caduca (XEP-0439 expires-at-ms). */
+  expiresAtMs?: number;
 }
 
 export interface XmppInlineCommand {
   jid: string;
   node: string;
   name: string;
+  style?: XmppButtonStyle;
 }
 
 export interface XmppPendingAction {
@@ -67,6 +74,8 @@ export interface XmppPendingAction {
   value?: string;
   jid?: string;
   node?: string;
+  style?: XmppButtonStyle;
+  expiresAtMs?: number;
 }
 
 export interface ActionParam {
