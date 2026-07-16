@@ -90,17 +90,75 @@ export async function getStoredExpoPushToken(): Promise<string | null> {
 
 // Track if app is in foreground
 let isForeground = true;
+/** Chat abierto ahora mismo: sus mensajes no se notifican. */
+let activeChatJid: string | null = null;
+/** bare jid -> nombre del contacto, para el título de la notificación. */
+const contactNameCache = new Map<string, string>();
+
+// Copia local a propósito: XmppService ya importa este módulo, así que
+// importar su bareJid crearía un ciclo.
+function bareJid(full: string): string {
+  return full.split('/')[0] ?? full;
+}
 
 // Called from AppState listener
 export function setAppForeground(foreground: boolean) {
   isForeground = foreground;
 }
 
+/**
+ * JID del chat abierto ahora mismo (o null). Mientras una conversación está
+ * a la vista no tiene sentido notificar sus mensajes: la pantalla de chat lo
+ * fija al entrar y lo limpia al salir.
+ */
+export function setActiveChatJid(jid: string | null) {
+  activeChatJid = jid ? bareJid(jid) : null;
+}
+
+/**
+ * Recuerda el nombre de cada contacto para que las notificaciones muestren
+ * "Rolando" y no "rolando@hablar.fuentelibre.org". Se refresca con cada
+ * cambio de roster.
+ */
+export function updateContactNameCache(contacts: { jid: string; name?: string }[]) {
+  for (const contact of contacts) {
+    if (!contact?.jid) continue;
+    const name = contact.name?.trim();
+    if (name) contactNameCache.set(bareJid(contact.jid), name);
+    else contactNameCache.delete(bareJid(contact.jid));
+  }
+}
+
+/**
+ * Retira las notificaciones ya mostradas de una conversación. Se llama cuando
+ * el mensaje se resolvió en otro sitio (p.ej. una corrección XEP-0308 retira
+ * una pregunta): dejar el aviso colgado llevaría a un chat que ya no tiene
+ * nada pendiente.
+ */
+export async function dismissNotificationForJid(jid: string): Promise<void> {
+  const target = bareJid(jid);
+  const presented = await Notifications.getPresentedNotificationsAsync();
+  await Promise.all(
+    presented
+      .filter((notification) => {
+        const data = notification.request.content.data as { jid?: string } | null;
+        return data?.jid ? bareJid(data.jid) === target : false;
+      })
+      .map((notification) =>
+        Notifications.dismissNotificationAsync(notification.request.identifier)),
+  );
+}
+
 // Show notification for incoming XMPP message
 export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
   if (isForeground) return; // Don't notify when app is open
+  // Tampoco notificar el chat que el usuario está mirando.
+  if (activeChatJid && bareJid(msg.from) === activeChatJid) return;
 
-  const title = contactName || msg.from || 'Nuevo mensaje';
+  const title = contactName
+    || contactNameCache.get(bareJid(msg.from))
+    || msg.from
+    || 'Nuevo mensaje';
   const body = msg.body.length > 200 ? msg.body.slice(0, 197) + '...' : msg.body;
 
   await Notifications.scheduleNotificationAsync({
