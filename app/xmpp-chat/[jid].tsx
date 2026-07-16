@@ -14,7 +14,9 @@ import {
   Pressable,
   Image,
   Linking,
+  Alert,
 } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
@@ -171,6 +173,7 @@ export default function XmppChatScreen() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
   const [agentControlsOpen, setAgentControlsOpen] = useState(false);
   const [bypassEnabled, setBypassEnabled] = useState(false);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
@@ -430,6 +433,37 @@ export default function XmppChatScreen() {
       // ignore
     }
   }, [input, decodedJid, sendMessage]);
+
+  /** Elige un archivo y lo sube por XEP-0363 (el link se manda como OOB). */
+  const handleAttach = useCallback(async () => {
+    if (attaching) return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+      });
+      if (picked.canceled) return;
+      const asset = picked.assets?.[0];
+      if (!asset) return;
+      setAttaching(true);
+      // fetch(uri).blob() lee el archivo sin necesitar expo-file-system.
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+      await XmppService.sendFile(
+        decodedJid,
+        blob,
+        asset.name || 'file',
+        asset.mimeType || 'application/octet-stream',
+        'chat',
+      );
+    } catch (e) {
+      Alert.alert(
+        'No se pudo enviar el archivo',
+        e instanceof Error ? e.message : String(e),
+      );
+    } finally {
+      setAttaching(false);
+    }
+  }, [attaching, decodedJid]);
 
   const handleAnswerAction = useCallback(async (action: XmppPendingAction) => {
     setActionBusy(action.id);
@@ -848,6 +882,17 @@ export default function XmppChatScreen() {
         )}
 
         <View style={styles.inputBar}>
+          <TouchableOpacity
+            style={[styles.attachBtn, (state !== 'online' || attaching) && styles.sendBtnDisabled]}
+            onPress={handleAttach}
+            disabled={state !== 'online' || attaching}
+          >
+            {attaching ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <Ionicons name="attach" size={22} color={Colors.primary} />
+            )}
+          </TouchableOpacity>
           <TextInput
             style={styles.input}
             value={input}
@@ -1178,6 +1223,13 @@ const styles = StyleSheet.create({
   },
   sendBtn: { backgroundColor: Colors.primary, width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   sendBtnDisabled: { opacity: 0.4 },
+  attachBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingTop: 80 },
   emptyText: { fontSize: 16, color: Colors.muted },
   emptySubtext: { fontSize: 13, color: Colors.textDim },
