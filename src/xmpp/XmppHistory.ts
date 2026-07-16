@@ -20,10 +20,18 @@ CREATE TABLE IF NOT EXISTS messages (
     mam_id TEXT,
     quick_responses TEXT,
     commands TEXT,
+    stanza_id TEXT,
+    oob_url TEXT,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
 `;
+// idx_messages_jid_stanza no va aquí: en una DB existente (creada antes de que
+// stanza_id existiera), CREATE TABLE IF NOT EXISTS es un no-op sobre la tabla
+// vieja, pero este CREATE INDEX igual correría contra ella y fallaría con
+// "no such column: stanza_id" — la columna todavía no existe a esta altura,
+// sólo después de que migrateMetadataColumns() la agregue más abajo, que es
+// donde también se crea este índice.
 
 export type Direction = 'in' | 'out';
 
@@ -34,6 +42,9 @@ export interface HistoryRow {
   mam_id: string | null;
   quick_responses: XmppQuickResponse[];
   commands: XmppInlineCommand[];
+  stanza_id: string | null;
+  /** Link del adjunto (XEP-0066 OOB), si el mensaje trae uno. */
+  oob_url: string | null;
 }
 
 export interface HistoryPreviewRow extends HistoryRow {
@@ -44,11 +55,19 @@ let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
+    // Si open/migrate falla una vez, no dejar la promesa rota en caché para
+    // siempre: cada llamada posterior volvería a fallar sin reintentar, y en
+    // un build de release eso se ve como "el historial no carga" sin ningún
+    // error visible. Limpiar dbPromise en el catch permite que la próxima
+    // pantalla que abra un chat vuelva a intentarlo.
     dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
       await db.execAsync('PRAGMA journal_mode=WAL;');
       await db.execAsync(SCHEMA);
       await migrateMetadataColumns(db);
       return db;
+    }).catch((error) => {
+      dbPromise = null;
+      throw error;
     });
   }
   return dbPromise;
@@ -62,6 +81,26 @@ async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> 
   }
   if (!names.has('commands')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN commands TEXT');
+  }
+  if (!names.has('stanza_id')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN stanza_id TEXT');
+    await db.execAsync(
+      'CREATE INDEX IF NOT EXISTS idx_messages_jid_stanza ON messages(bare_jid, stanza_id)',
+    );
+    // Filas de antes de esta migración con quick_responses/commands
+    // pendientes no tienen stanza_id para correlacionar con una futura
+    // corrección XEP-0308 — darlas por resueltas de una vez, igual que
+    // el cliente desktop (ver xmpp_history.py _migrate_db).
+    await db.execAsync(
+      'UPDATE messages SET quick_responses = NULL, commands = NULL '
+        + 'WHERE stanza_id IS NULL '
+        + 'AND (quick_responses IS NOT NULL OR commands IS NOT NULL)',
+    );
+  }
+  // Link del adjunto entrante (XEP-0066 OOB). Sin esta columna el oobUrl que
+  // ya parseaba XmppService se perdía al persistir y no se podía renderizar.
+  if (!names.has('oob_url')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN oob_url TEXT');
   }
 }
 
@@ -79,9 +118,11 @@ function decodeMetadata<T>(value: string | null | undefined): T[] {
   }
 }
 
-type DbHistoryRow = Omit<HistoryRow, 'quick_responses' | 'commands'> & {
+type DbHistoryRow = Omit<HistoryRow, 'quick_responses' | 'commands' | 'stanza_id' | 'oob_url'> & {
   quick_responses: string | null;
   commands: string | null;
+  stanza_id?: string | null;
+  oob_url?: string | null;
 };
 
 function decodeRow(row: DbHistoryRow): HistoryRow {
@@ -89,6 +130,8 @@ function decodeRow(row: DbHistoryRow): HistoryRow {
     ...row,
     quick_responses: decodeMetadata<XmppQuickResponse>(row.quick_responses),
     commands: decodeMetadata<XmppInlineCommand>(row.commands),
+    stanza_id: row.stanza_id ?? null,
+    oob_url: row.oob_url ?? null,
   };
 }
 
@@ -126,12 +169,14 @@ export const XmppHistory = {
     mamId: string | null = null,
     quickResponses: XmppQuickResponse[] | null = null,
     commands: XmppInlineCommand[] | null = null,
+    stanzaId: string | null = null,
+    oobUrl: string | null = null,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
       'INSERT OR IGNORE INTO messages '
-        + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?)',
+        + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -140,13 +185,22 @@ export const XmppHistory = {
         mamId,
         encodeMetadata(quickResponses),
         encodeMetadata(commands),
+        stanzaId,
+        oobUrl,
       ],
     );
     if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
       await db.runAsync(
         'UPDATE messages SET quick_responses = COALESCE(?, quick_responses), '
-          + 'commands = COALESCE(?, commands) WHERE bare_jid = ? AND mam_id = ?',
-        [encodeMetadata(quickResponses), encodeMetadata(commands), bareJid, mamId],
+          + 'commands = COALESCE(?, commands), '
+          + 'stanza_id = COALESCE(?, stanza_id) WHERE bare_jid = ? AND mam_id = ?',
+        [
+          encodeMetadata(quickResponses),
+          encodeMetadata(commands),
+          stanzaId,
+          bareJid,
+          mamId,
+        ],
       );
     }
     return result.changes > 0;
@@ -156,8 +210,8 @@ export const XmppHistory = {
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM messages '
         + 'WHERE bare_jid = ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, limit],
@@ -169,8 +223,8 @@ export const XmppHistory = {
   async getBefore(bareJid: string, beforeTimestamp: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM messages '
         + 'WHERE bare_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, beforeTimestamp, limit],
@@ -186,6 +240,21 @@ export const XmppHistory = {
       [bareJid],
     );
     return row?.timestamp ?? null;
+  },
+
+  /**
+   * Archive UID of the newest cached message that carries one — the RSM `after`
+   * cursor for an incremental MAM catch-up. Ordered by timestamp (not rowid) so
+   * a late-arriving older archive page can't shadow a genuinely newer message.
+   */
+  async getLatestMamId(bareJid: string): Promise<string | null> {
+    const db = await getDb();
+    const row = await db.getFirstAsync<{ mam_id: string }>(
+      'SELECT mam_id FROM messages WHERE bare_jid = ? AND mam_id IS NOT NULL '
+        + 'ORDER BY timestamp DESC LIMIT 1',
+      [bareJid],
+    );
+    return row?.mam_id ?? null;
   },
 
   /** Latest cached message for each requested conversation. */
@@ -221,6 +290,7 @@ export const XmppHistory = {
     mamId: string,
     quickResponses: XmppQuickResponse[] | null = null,
     commands: XmppInlineCommand[] | null = null,
+    stanzaId: string | null = null,
     windowSeconds = 30,
   ): Promise<boolean> {
     const target = parseTs(timestamp);
@@ -239,12 +309,14 @@ export const XmppHistory = {
         await db.runAsync(
           'UPDATE messages SET timestamp = ?, mam_id = ?, '
             + 'quick_responses = COALESCE(?, quick_responses), '
-            + 'commands = COALESCE(?, commands) WHERE id = ?',
+            + 'commands = COALESCE(?, commands), '
+            + 'stanza_id = COALESCE(?, stanza_id) WHERE id = ?',
           [
             timestamp,
             mamId,
             encodeMetadata(quickResponses),
             encodeMetadata(commands),
+            stanzaId,
             row.id,
           ],
         );
@@ -254,15 +326,54 @@ export const XmppHistory = {
     return false;
   },
 
-  async quickResponseWasAnswered(timestamp: string, values: string[]): Promise<boolean> {
+  /**
+   * Clear quick_responses/commands for the question identified by
+   * stanzaId without touching its body — used when a secondary sync
+   * signal (own carbon) resolves the question before the authoritative
+   * XEP-0308 correction (with its replacement text) arrives.
+   */
+  async markResolvedByStanzaId(bareJid: string, stanzaId: string): Promise<boolean> {
+    const db = await getDb();
+    const result = await db.runAsync(
+      'UPDATE messages SET quick_responses = NULL, commands = NULL '
+        + 'WHERE bare_jid = ? AND stanza_id = ?',
+      [bareJid, stanzaId],
+    );
+    return result.changes > 0;
+  },
+
+  /**
+   * Apply an incoming XEP-0308 correction to the question identified by
+   * stanzaId: replaces the body and clears quick_responses/commands (now
+   * resolved) so a later history restore doesn't show the card again.
+   */
+  async applyCorrectionByStanzaId(
+    bareJid: string,
+    stanzaId: string,
+    body: string,
+  ): Promise<boolean> {
+    const db = await getDb();
+    const result = await db.runAsync(
+      'UPDATE messages SET body = ?, quick_responses = NULL, commands = NULL '
+        + 'WHERE bare_jid = ? AND stanza_id = ?',
+      [body, bareJid, stanzaId],
+    );
+    return result.changes > 0;
+  },
+
+  async quickResponseWasAnswered(
+    bareJid: string,
+    timestamp: string,
+    values: string[],
+  ): Promise<boolean> {
     const candidates = [...new Set(values.filter(Boolean))];
     if (candidates.length === 0) return false;
     const db = await getDb();
     const placeholders = candidates.map(() => '?').join(',');
     const row = await db.getFirstAsync<{ id: number }>(
-      'SELECT id FROM messages WHERE direction = ? AND timestamp >= ? '
+      'SELECT id FROM messages WHERE bare_jid = ? AND direction = ? AND timestamp >= ? '
         + `AND body IN (${placeholders}) LIMIT 1`,
-      ['out', timestamp, ...candidates],
+      [bareJid, 'out', timestamp, ...candidates],
     );
     return Boolean(row);
   },

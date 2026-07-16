@@ -745,6 +745,7 @@ function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
     isGroup: false,
     quickResponses: row.quick_responses,
     commands: row.commands,
+    oobUrl: row.oob_url,
   };
 }
 
@@ -1199,7 +1200,7 @@ export const XmppService = {
               carbonMsg.quickResponses?.length || carbonMsg.commands?.length);
             XmppHistory.recordMessage(partnerJid, carbonBody, direction, delayTs, null,
               carbonMsg.quickResponses ?? null, carbonMsg.commands ?? null,
-              carbonHasPending ? msgId : null).catch(() => {});
+              carbonHasPending ? msgId : null, carbonMsg.oobUrl ?? null).catch(() => {});
           }
         }
         return;
@@ -1266,6 +1267,7 @@ export const XmppService = {
         quickResponses,
         commands,
         hasPending ? msg.id : null,
+        msg.oobUrl ?? null,
       ).catch(() => {});
     });
 

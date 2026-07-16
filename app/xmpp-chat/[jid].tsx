@@ -12,6 +12,8 @@ import {
   ScrollView,
   Modal,
   Pressable,
+  Image,
+  Linking,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
@@ -24,6 +26,24 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(\?|#|$)/i;
+
+/** ¿El adjunto es una imagen? (por extensión del link de XEP-0363). */
+function isImageUrl(url: string): boolean {
+  return IMAGE_EXT_RE.test(url);
+}
+
+/** Nombre de archivo legible a partir del link del adjunto. */
+function fileNameFromUrl(url: string): string {
+  try {
+    const path = new URL(url).pathname;
+    const name = decodeURIComponent(path.split('/').pop() || '');
+    return name || url;
+  } catch {
+    return url.split('/').pop() || url;
+  }
+}
 
 /** Color de fondo del botón según su estilo (paridad con Telegram/GTK). */
 function pillBackgroundForStyle(style?: XmppButtonStyle): string {
@@ -477,7 +497,33 @@ export default function XmppChatScreen() {
             {!isMine && item.type === 'groupchat' && (
               <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
             )}
-            <Text style={[styles.messageText, isMine && styles.messageTextMine]}>{item.body}</Text>
+            {item.oobUrl ? (
+              isImageUrl(item.oobUrl) ? (
+                // Adjunto de imagen: preview tocable que abre el original.
+                <TouchableOpacity onPress={() => Linking.openURL(item.oobUrl!)}>
+                  <Image
+                    source={{ uri: item.oobUrl }}
+                    style={styles.attachmentImage}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              ) : (
+                // Otro tipo de archivo: fila con icono + nombre, abre el link.
+                <TouchableOpacity
+                  style={styles.attachmentFile}
+                  onPress={() => Linking.openURL(item.oobUrl!)}
+                >
+                  <Ionicons name="document-outline" size={18} color={Colors.primary} />
+                  <Text style={styles.attachmentFileName} numberOfLines={1}>
+                    {fileNameFromUrl(item.oobUrl)}
+                  </Text>
+                </TouchableOpacity>
+              )
+            ) : null}
+            {/* El body de un adjunto suele ser la propia URL: no repetirla. */}
+            {item.body && item.body !== item.oobUrl ? (
+              <Text style={[styles.messageText, isMine && styles.messageTextMine]}>{item.body}</Text>
+            ) : null}
             <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
               {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </Text>
@@ -918,6 +964,24 @@ const styles = StyleSheet.create({
   },
   actionPillDisabled: { opacity: 0.5 },
   actionPillText: { color: Colors.background, fontSize: 13, fontWeight: '700' },
+  attachmentImage: {
+    width: 220,
+    height: 160,
+    borderRadius: 10,
+    marginBottom: 6,
+    backgroundColor: Colors.surface,
+  },
+  attachmentFile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: Colors.surface,
+    marginBottom: 6,
+  },
+  attachmentFileName: { color: Colors.primary, fontSize: 13, flexShrink: 1 },
   modelBadge: {
     backgroundColor: Colors.inputBackground,
     borderWidth: 1,
