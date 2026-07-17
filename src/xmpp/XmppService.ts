@@ -4,6 +4,7 @@
  * React components subscribe via listeners, never own the connection.
  */
 import { client, xml } from '@xmpp/client';
+import * as FileSystem from 'expo-file-system';
 import type { Client, Element } from '@xmpp/xml';
 import type {
   DataForm,
@@ -23,6 +24,7 @@ import {
   updateContactNameCache,
 } from '@/xmpp/notifications';
 import { PushStatus } from '@/xmpp/pushStatus';
+import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { buildFormElement } from '@/xmpp/xep-0004';
@@ -95,10 +97,19 @@ function extractDelayStamp(stanza: Element): string | null {
 function extractOobUrl(stanza: Element, body: string): string | null {
   const x = stanza.getChild('x', 'jabber:x:oob');
   const url = x?.getChildText('url');
-  if (url) return url;
+  if (url) return url.trim();
   const trimmed = body.trim();
   if (/^https?:\/\/\S+$/.test(trimmed)) return trimmed;
   return null;
+}
+
+function bodyWithOob(stanza: Element, body: string): string {
+  const text = body.trim();
+  const oobUrl = extractOobUrl(stanza, text);
+  if (!oobUrl) return text;
+  if (!text) return oobUrl;
+  if (text.includes(oobUrl)) return text;
+  return `${text}\n${oobUrl}`;
 }
 
 const QUICK_RESPONSE_NS = 'urn:xmpp:quick-response:0';
@@ -121,6 +132,12 @@ const EXPO_PUSH_SERVICE_JID = 'expo-push.hablar.fuentelibre.org';
 // gateway. Un agente aún no migrado sigue publicando bajo el nodo legacy.
 const TELEMETRY_NODE = 'urn:openclaw:telemetry:0';
 const LEGACY_TELEMETRY_NODE = 'urn:nanoclaw:telemetry:0';
+
+// Avatares XEP-0084: el contacto anuncia el hash de su foto en el nodo de
+// metadata y sirve los bytes (base64) en el de data, que se piden a demanda.
+const AVATAR_METADATA_NODE = 'urn:xmpp:avatar:metadata';
+const AVATAR_DATA_NODE = 'urn:xmpp:avatar:data';
+const PUBSUB_NS = 'http://jabber.org/protocol/pubsub';
 const DISCO_INFO_NS = 'http://jabber.org/protocol/disco#info';
 
 const CAPS_NODE = 'https://github.com/icarito/gtk-llm-chat-android';
@@ -133,7 +150,14 @@ const CAPS_NODE = 'https://github.com/icarito/gtk-llm-chat-android';
  * agente publica su telemetría y nosotros no recibimos nada — no hay error, no
  * hay stanza, simplemente no llega.
  */
-const CAPS_FEATURES = [DISCO_INFO_NS, `${TELEMETRY_NODE}+notify`, `${LEGACY_TELEMETRY_NODE}+notify`];
+const CAPS_FEATURES = [
+  DISCO_INFO_NS,
+  `${TELEMETRY_NODE}+notify`,
+  `${LEGACY_TELEMETRY_NODE}+notify`,
+  // Avatares XEP-0084: sin el +notify del nodo de metadata el servidor no nos
+  // avisa cuando un contacto cambia su foto.
+  `${AVATAR_METADATA_NODE}+notify`,
+];
 const pushLog = globalThis.console;
 
 function normalizeButtonStyle(raw: unknown): XmppButtonStyle | undefined {
@@ -274,7 +298,7 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
   const message = forwarded.getChild('message');
   if (!message) return null;
 
-  const body = message.getChildText('body') || '';
+  const body = bodyWithOob(message, message.getChildText('body') || '');
   if (!body) return null;
 
   const fromAttr = (message.attrs.from as string) || '';
@@ -340,11 +364,69 @@ let uploadHostCache: string | null | undefined = undefined;
 let seenIds = new Set<string>();
 let pingTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectPromise: Promise<void> | null = null;
+/** Reintento propio tras una caída detectada por nosotros (ver scheduleReconnect). */
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
+/** true tras un disconnect() explícito: no reconectar a espaldas del usuario. */
+let userStopped = false;
 /** bare JID -> the set of their resources currently announcing availability. */
 let onlineResources = new Map<string, Set<string>>();
 
 /** PEP telemetry cache: bare_jid -> telemetry dict parsed from pubsub events. */
 const agentTelemetry = new Map<string, Record<string, unknown>>();
+
+/** bare_jid -> file:// del avatar cacheado (XEP-0084). */
+const avatarUris = new Map<string, string>();
+const avatarListeners = new Set<(jid: string, uri: string | null) => void>();
+
+function notifyAvatars(jid: string) {
+  const uri = avatarUris.get(jid) ?? null;
+  for (const listener of avatarListeners) listener(jid, uri);
+}
+
+/**
+ * Pide los bytes del avatar y los deja en caché de disco.
+ *
+ * El fichero se nombra por el SHA-1: en XEP-0084 el hash ES la identidad de la
+ * imagen, así que un fichero por hash nunca queda obsoleto y al reabrir la app
+ * no hay que volver a pedir nada.
+ */
+async function fetchAvatarData(bare: string, sha: string): Promise<void> {
+  try {
+    const dir = `${FileSystem.cacheDirectory}avatars/`;
+    const path = `${dir}${sha}.img`;
+    const existing = await FileSystem.getInfoAsync(path);
+    if (existing.exists) {
+      avatarUris.set(bare, path);
+      notifyAvatars(bare);
+      return;
+    }
+    if (!xmppClient || connectionState !== 'online') return;
+
+    const result = await xmppClient.iqCaller.request(
+      xml('iq', { type: 'get', to: bare, id: `avatar-${Date.now()}` },
+        xml('pubsub', { xmlns: PUBSUB_NS },
+          xml('items', { node: AVATAR_DATA_NODE }, xml('item', { id: sha })))),
+      15000,
+    );
+    const base64 = result
+      .getChild('pubsub', PUBSUB_NS)
+      ?.getChild('items')
+      ?.getChildren('item')
+      ?.map((item: Element) => item.getChild('data', AVATAR_DATA_NODE)?.text())
+      .find((text?: string) => Boolean(text));
+    if (!base64) return;
+
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+    await FileSystem.writeAsStringAsync(path, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    avatarUris.set(bare, path);
+    notifyAvatars(bare);
+  } catch {
+    // Un avatar que no llega no debe romper el chat.
+  }
+}
 
 export type AgentTelemetryListener = (jid: string, telemetry: Record<string, unknown>) => void;
 const telemetryListeners = new Set<AgentTelemetryListener>();
@@ -638,7 +720,11 @@ async function pingServer(jid: string, timeoutMs = 15000): Promise<void> {
 }
 
 async function enableExpoPushIfAvailable(): Promise<void> {
-  if (!xmppClient || connectionState !== 'online') return;
+  // Capturamos el cliente ANTES del await: si mientras tanto la conexión se cae,
+  // el auto-retry pone xmppClient a null y leer la global después revienta con
+  // "Cannot read property 'iqCaller' of null" en cada reintento.
+  const activeClient = xmppClient;
+  if (!activeClient || connectionState !== 'online') return;
 
   const token = await getStoredExpoPushToken();
   if (!token) {
@@ -646,9 +732,10 @@ async function enableExpoPushIfAvailable(): Promise<void> {
     pushLog.warn('[xmpp-push] No stored Expo push token yet; skipping XEP-0357 registration');
     return;
   }
+  if (xmppClient !== activeClient) return; // reconectamos durante el await
 
   PushStatus.update({ registration: 'pending', error: null });
-  await xmppClient.iqCaller.request(
+  await activeClient.iqCaller.request(
     xml(
       'iq',
       { type: 'set', id: `push-enable-${Date.now()}` },
@@ -664,16 +751,60 @@ async function enableExpoPushIfAvailable(): Promise<void> {
   pushLog.warn(`[xmpp-push] XEP-0357 registered with ${EXPO_PUSH_SERVICE_JID}`);
 }
 
+/** Backoff: 5s, 10s, 20s, 40s, 80s, tope 2min. */
+const RETRY_BASE_MS = 5000;
+const RETRY_MAX_MS = 120000;
+
+function stopRetry() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  retryAttempt = 0;
+}
+
+/**
+ * Vuelve a levantar la sesión tras una caída que detectamos nosotros.
+ *
+ * Hace falta un reintento propio porque el de @xmpp/client sólo cubre las
+ * caídas que ve el socket: cuando el ping se queda sin respuesta llamamos a
+ * stop(), que es una parada DELIBERADA y por tanto desactiva su reconexión
+ * automática. Sin esto la sesión quedaba muerta hasta que el usuario mandaba la
+ * app a background y la volvía a abrir (único sitio que llamaba a
+ * reconnectIfNeeded), que es justo el "no recupera la conexión después de un
+ * rato".
+ */
+function scheduleReconnect() {
+  if (userStopped || retryTimer || !accountConfig) return;
+  const delay = Math.min(RETRY_BASE_MS * 2 ** retryAttempt, RETRY_MAX_MS);
+  retryAttempt++;
+  retryTimer = setTimeout(async () => {
+    retryTimer = null;
+    if (userStopped || !accountConfig) return;
+    if (connectionState === 'online') { stopRetry(); return; }
+    try {
+      await XmppService.reconnectIfNeeded(accountConfig);
+      stopRetry();
+    } catch {
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
 function startPing(jid: string) {
   stopPing();
   pingTimer = setInterval(async () => {
-    if (!xmppClient) return;
+    // Capturamos el cliente: durante el await del ping la conexión puede
+    // cambiar, y tumbar al cliente NUEVO por el fallo del viejo deja a medio
+    // servicio hablándole a un xmppClient ya nulo.
+    const activeClient = xmppClient;
+    if (!activeClient) return;
     try {
       await pingServer(jid);
     } catch {
-      await xmppClient.stop().catch(() => {});
+      if (xmppClient !== activeClient) return; // ya reconectamos
+      await activeClient.stop().catch(() => {});
+      xmppClient = null;
       connectionState = 'offline';
       notifyState();
+      scheduleReconnect();
     }
   }, 55000);
 }
@@ -948,6 +1079,46 @@ export const XmppService = {
     return () => telemetryListeners.delete(fn);
   },
 
+  /** file:// del avatar cacheado del contacto (XEP-0084), si publicó uno. */
+  getAvatarUri(bareJid: string): string | null {
+    return avatarUris.get(bareJid) ?? null;
+  },
+
+  /**
+   * Pide el avatar actual del contacto.
+   *
+   * Los eventos PEP sólo llegan cuando el contacto *publica*: uno que puso su
+   * avatar antes de que nos conectáramos no emite nada, así que sin esto no lo
+   * veríamos nunca (mismo motivo que fetchAgentTelemetry).
+   */
+  async fetchAvatar(bareJid: string): Promise<void> {
+    if (avatarUris.has(bareJid)) return;
+    if (!xmppClient || connectionState !== 'online') return;
+    try {
+      const result = await xmppClient.iqCaller.request(
+        xml('iq', { type: 'get', to: bareJid, id: `avatar-meta-${Date.now()}` },
+          xml('pubsub', { xmlns: PUBSUB_NS },
+            xml('items', { node: AVATAR_METADATA_NODE, max_items: '1' }))),
+        15000,
+      );
+      const info = result
+        .getChild('pubsub', PUBSUB_NS)
+        ?.getChild('items')
+        ?.getChildren('item')
+        ?.map((item: Element) => item.getChild('metadata', AVATAR_METADATA_NODE)?.getChild('info'))
+        .find((node?: Element) => Boolean(node?.attrs?.id));
+      const sha = info?.attrs.id as string | undefined;
+      if (sha) await fetchAvatarData(bareJid, sha);
+    } catch {
+      // Lo normal si el contacto no publicó avatar.
+    }
+  },
+
+  onAvatarChange(fn: (jid: string, uri: string | null) => void) {
+    avatarListeners.add(fn);
+    return () => avatarListeners.delete(fn);
+  },
+
   /**
    * Pide el valor actual del nodo de telemetría del agente.
    *
@@ -998,6 +1169,10 @@ export const XmppService = {
     if (xmppClient) {
       await this.disconnect();
     }
+    // Después del disconnect de arriba, que lo deja puesto: conectar es la
+    // intención contraria y reabre la puerta al auto-retry.
+    userStopped = false;
+    stopRetry();
 
     connectionState = 'connecting';
     notifyState();
@@ -1013,13 +1188,17 @@ export const XmppService = {
 
     const botNick = config.jid.split('@')[0]!;
     const domain = config.jid.split('@')[1];
+    const deviceSuffix = await getDeviceResourceSuffix();
 
     xmppClient = client({
       service: config.service,
       domain,
       username: config.jid.split('@')[0],
       password: config.password,
-      resource: `${config.resource || 'gtk-llm-chat-android'}-${Math.random().toString(36).slice(2, 10)}`,
+      // Sufijo estable, no aleatorio por arranque: así el servidor reemplaza
+      // nuestra sesión anterior en vez de dejarla como zombi (ver
+      // getDeviceResourceSuffix).
+      resource: `${config.resource || 'gtk-llm-chat-android'}-${deviceSuffix}`,
     });
 
     xmppClient.reconnect.on('reconnecting', () => {
@@ -1041,16 +1220,20 @@ export const XmppService = {
     //  2. Si algún día el servidor sí verifica el hash, esto deja de funcionar y
     //     habrá que calcular el ver de verdad (el gateway lo hace en
     //     capsVerHash(), src/channels/xmpp.ts) — con una implementación de SHA-1.
-    const capsHash = 'v2-telemetry';
+    // SUBIDA A MANO al añadir el +notify de avatares: el servidor cachea por
+    // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
+    // los features nuevos no se anunciarían y no llegarían los avatares.
+    const capsHash = 'v3-telemetry-avatar';
     const capsNode = CAPS_NODE;
 
     xmppClient.on('online', () => {
       connectionState = 'online';
       notifyState();
+      stopRetry();
       ForegroundService.start(config.jid).catch(() => {});
 
       // XEP-0280 Carbons — usar iqCaller para asegurar delivery y tener id
-      xmppClient!.iqCaller.request(
+      xmppClient?.iqCaller.request(
         xml('iq', { type: 'set', id: `carbons-${Date.now()}` },
           xml('enable', { xmlns: 'urn:xmpp:carbons:2' })),
         10000,
@@ -1086,7 +1269,11 @@ export const XmppService = {
           const sub = (item.attrs.subscription as string) || 'none';
           contactsMap.set(jid, {
             jid,
-            name: (item.attrs.name as string) || jid,
+            // Sin nombre en el roster lo dejamos vacío a propósito: meter aquí
+            // el jid entero hacía que la UI no pudiera distinguir "se llama
+            // así" de "no tiene nombre", y acababa pintando el jid crudo en vez
+            // de inferir la parte local (ver displayName()).
+            name: (item.attrs.name as string) || '',
             subscription: sub as XmppContact['subscription'],
             // Unknown until a <presence> arrives — same as the GTK client.
             presence: 'offline',
@@ -1111,11 +1298,15 @@ export const XmppService = {
       connectionState = 'offline';
       notifyState();
       stopPing();
+      // @xmpp/reconnect cubre la caída del socket, pero no si el stop vino de
+      // nosotros (ping muerto) ni si su propio reintento se agota.
+      scheduleReconnect();
     });
 
     xmppClient.on('error', () => {
       connectionState = 'error';
       notifyState();
+      scheduleReconnect();
     });
 
     xmppClient.on('stanza', (stanza: Element) => {
@@ -1219,6 +1410,22 @@ export const XmppService = {
           }
           return;
         }
+        if (node === AVATAR_METADATA_NODE) {
+          const from = stanza.attrs.from as string | undefined;
+          if (!from) return;
+          const bare = bareJid(from);
+          const item = items?.getChildren('item')?.[0];
+          // Metadata sin <info> = el contacto retiró su avatar.
+          const info = item?.getChild('metadata', AVATAR_METADATA_NODE)?.getChild('info');
+          const sha = info?.attrs.id as string | undefined;
+          if (!sha) {
+            avatarUris.delete(bare);
+            notifyAvatars(bare);
+            return;
+          }
+          void fetchAvatarData(bare, sha);
+          return;
+        }
         // Other pubsub nodes are ignored.
         return;
       }
@@ -1255,7 +1462,7 @@ export const XmppService = {
         const msgCandidates = forwarded?.getChildren('message') ?? [];
         const message = msgCandidates[0];
         if (message) {
-          const carbonBody = message.getChildText('body') || '';
+          const carbonBody = bodyWithOob(message, message.getChildText('body') || '');
           if (carbonBody) {
             const fromAttr = (message.attrs.from as string) || '';
             const toAttr = (message.attrs.to as string) || '';
@@ -1313,7 +1520,7 @@ export const XmppService = {
       const type = stanza.attrs.type;
       if (type !== 'chat' && type !== 'groupchat') return;
 
-      const body = stanza.getChildText('body') || '';
+      const body = bodyWithOob(stanza, stanza.getChildText('body') || '');
       const from = stanza.attrs.from as string | undefined;
       if (!from) return;
       if (!body) return;
@@ -1424,6 +1631,9 @@ export const XmppService = {
   },
 
   async disconnect() {
+    // El usuario se desconectó a propósito: que el auto-retry no lo revierta.
+    userStopped = true;
+    stopRetry();
     stopPing();
     if (xmppClient) {
       await xmppClient.stop().catch(() => {});

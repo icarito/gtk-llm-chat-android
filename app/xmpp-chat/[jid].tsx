@@ -21,6 +21,8 @@ import { useLocalSearchParams, Stack } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { setActiveChatJid } from '@/xmpp/notifications';
+import { displayName, presenceColor } from '@/xmpp/presence';
+import { pendingOutboundCount } from '@/xmpp/pendingCount';
 import { formatAgentActivity, parseAgentStatus } from '@/xmpp/agentStatus';
 import { Colors } from '@/constants/theme';
 import type { XmppButtonStyle, XmppInlineCommand, XmppMessage, XmppPendingAction } from '@/types/xmpp';
@@ -29,11 +31,42 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
 
+const URL_RE = /https?:\/\/[^\s<>"']+/g;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(\?|#|$)/i;
+const TRAILING_URL_PUNCT_RE = /[.,;:!?)\]}]+$/;
 
 /** ¿El adjunto es una imagen? (por extensión del link de XEP-0363). */
 function isImageUrl(url: string): boolean {
   return IMAGE_EXT_RE.test(url);
+}
+
+function firstImageUrl(content?: string | null): string | null {
+  if (!content) return null;
+  URL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = URL_RE.exec(content)) !== null) {
+    const url = match[0].replace(TRAILING_URL_PUNCT_RE, '');
+    if (isImageUrl(url)) return url;
+  }
+  return null;
+}
+
+function contentWithoutAttachmentUrl(content: string, imageUrl: string | null): string {
+  if (!imageUrl) return content;
+  URL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = URL_RE.exec(content)) !== null) {
+    const url = match[0].replace(TRAILING_URL_PUNCT_RE, '');
+    if (url !== imageUrl) continue;
+    const stripped = `${content.slice(0, match.index)}${content.slice(match.index + match[0].length)}`
+      .replace(/[ \t]+([,.;:!?])/g, '$1')
+      .replace(/\s+[)\]}]+(?=\s|$)/g, '')
+      .replace(/^[ \t]+|[ \t]+$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return stripped.replace(/^\[Photo\]\s*[^:\n]*:\s*$/i, '').trim();
+  }
+  return content;
 }
 
 /** Nombre de archivo legible a partir del link del adjunto. */
@@ -409,6 +442,18 @@ export default function XmppChatScreen() {
   // timing games, and prepending older history can't yank the view.
   const inverted = useMemo(() => [...sortedMsgs].reverse(), [sortedMsgs]);
 
+  // Mensajes tuyos que el agente aún no ha contestado. Es optimista y local:
+  // se enciende al enviar, sin esperar a que el servidor publique presencia.
+  const pendingCount = useMemo(() => pendingOutboundCount(sortedMsgs), [sortedMsgs]);
+
+  // Ámbar sólo mientras el agente todavía no acusa trabajo: en cuanto pasa a
+  // dnd/busy manda su propio estado ("Trabajando", "Herramienta: exec"), que
+  // dice más que nuestra cuenta local.
+  const agentWorking = contact?.presence === 'dnd'
+    || ['processing', 'busy'].includes(agentStatus.activity.trim().toLowerCase())
+    || Boolean(agentStatus.tool);
+  const awaitingReply = pendingCount > 0 && !agentWorking;
+
   // Persist last visited chat
   useEffect(() => {
     AsyncStorage.setItem(LAST_CHAT_KEY, decodedJid).catch(() => {});
@@ -523,6 +568,8 @@ export default function XmppChatScreen() {
   const renderMessage = useCallback(
     ({ item }: { item: XmppMessage }) => {
       const isMine = item.direction === 'out';
+      const attachmentUrl = item.oobUrl || firstImageUrl(item.body);
+      const visibleBody = contentWithoutAttachmentUrl(item.body, attachmentUrl);
 
       return (
         <View style={[styles.messageRow,
@@ -531,32 +578,32 @@ export default function XmppChatScreen() {
             {!isMine && item.type === 'groupchat' && (
               <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
             )}
-            {item.oobUrl ? (
-              isImageUrl(item.oobUrl) ? (
+            {attachmentUrl ? (
+              isImageUrl(attachmentUrl) ? (
                 // Adjunto de imagen: preview tocable que abre el original.
-                <TouchableOpacity onPress={() => Linking.openURL(item.oobUrl!)}>
+                <TouchableOpacity onPress={() => Linking.openURL(attachmentUrl)}>
                   <Image
-                    source={{ uri: item.oobUrl }}
+                    source={{ uri: attachmentUrl }}
                     style={styles.attachmentImage}
-                    resizeMode="cover"
+                    resizeMode="contain"
                   />
                 </TouchableOpacity>
               ) : (
                 // Otro tipo de archivo: fila con icono + nombre, abre el link.
                 <TouchableOpacity
                   style={styles.attachmentFile}
-                  onPress={() => Linking.openURL(item.oobUrl!)}
+                  onPress={() => Linking.openURL(attachmentUrl)}
                 >
                   <Ionicons name="document-outline" size={18} color={Colors.primary} />
                   <Text style={styles.attachmentFileName} numberOfLines={1}>
-                    {fileNameFromUrl(item.oobUrl)}
+                    {fileNameFromUrl(attachmentUrl)}
                   </Text>
                 </TouchableOpacity>
               )
             ) : null}
-            {/* El body de un adjunto suele ser la propia URL: no repetirla. */}
-            {item.body && item.body !== item.oobUrl ? (
-              <Text style={[styles.messageText, isMine && styles.messageTextMine]}>{item.body}</Text>
+            {/* El body de un adjunto suele repetir la URL o una etiqueta genérica. */}
+            {visibleBody ? (
+              <Text style={[styles.messageText, isMine && styles.messageTextMine]}>{visibleBody}</Text>
             ) : null}
             <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
               {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -572,7 +619,7 @@ export default function XmppChatScreen() {
     <>
       <Stack.Screen
         options={{
-          headerTitle: contact?.name || decodedJid,
+          headerTitle: displayName(decodedJid, contact?.name),
           headerStyle: { backgroundColor: Colors.surface },
           headerTintColor: Colors.text,
           headerRight: () => (
@@ -595,84 +642,78 @@ export default function XmppChatScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={90}
       >
+        {/* Una sola línea, como en GTK: el detalle vive tras "Controles".
+            La barra de contexto se dibuja como hairline bajo la fila. */}
         <View style={styles.agentToolbar}>
-          <View style={styles.statusStrip}>
-            <View style={styles.statusMain}>
-              <View
-                style={[
-                  styles.statusDot,
-                  { backgroundColor: contact?.presence === 'online' ? Colors.success : Colors.muted },
-                ]}
-              />
-              <Text style={styles.statusActivity} numberOfLines={1}>
-                {formatAgentActivity(agentStatus.activity)}
-              </Text>
-              {modelBadge && (
-                <View style={styles.modelBadge}>
-                  <Text style={styles.modelBadgeText}>{modelBadge}</Text>
-                </View>
-              )}
-            </View>
-            {contextFraction !== null && (
-              <View style={styles.contextBar}>
-                <View style={[styles.contextFill, {
-                  width: `${Math.round(contextFraction * 100)}%`,
-                  backgroundColor: contextBarColor,
-                }]} />
-                {contextLabel && (
-                  <Text style={styles.contextBarLabel} numberOfLines={1}>{contextLabel}</Text>
-                )}
-              </View>
-            )}
-            {statusDetails.length > 0 && (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.statusMetrics}
-              >
-                {statusDetails.map((detail) => (
-                  <Text key={detail} style={styles.statusMetric} numberOfLines={1}>
-                    {detail}
-                  </Text>
-                ))}
-              </ScrollView>
-            )}
-          </View>
-
-          <View style={styles.statusFooter}>
-            <Text style={styles.connectionLabel} numberOfLines={1}>
-              {decodedJid}
-            </Text>
-            <TouchableOpacity
-              style={styles.agentControlsToggle}
-              onPress={() => setAgentControlsOpen((open) => !open)}
+          <TouchableOpacity
+            style={styles.statusStrip}
+            activeOpacity={0.7}
+            onPress={() => setAgentControlsOpen((open) => !open)}
+          >
+            <View
+              style={[
+                styles.statusDot,
+                { backgroundColor: awaitingReply ? Colors.warning : presenceColor(contact?.presence ?? 'offline') },
+              ]}
+            />
+            <Text
+              style={[styles.statusActivity, awaitingReply && styles.statusActivityPending]}
+              numberOfLines={1}
             >
-              <Ionicons name="options-outline" size={16} color={Colors.textDim} />
-              <Text style={styles.agentControlsToggleText}>Controles</Text>
-              <Ionicons
-                name={agentControlsOpen ? 'chevron-down' : 'chevron-forward'}
-                size={14}
-                color={Colors.textDim}
-              />
-            </TouchableOpacity>
-          </View>
+              {awaitingReply
+                ? `${pendingCount} ${pendingCount === 1 ? 'mensaje' : 'mensajes'} por procesar`
+                : formatAgentActivity(agentStatus.activity)}
+            </Text>
+            {modelBadge && (
+              <Text style={styles.modelBadgeText} numberOfLines={1}>{modelBadge}</Text>
+            )}
+            <View style={styles.statusSpacer} />
+            {contextFraction !== null && (
+              <Text style={[styles.contextPercent, { color: contextBarColor }]}>
+                {Math.round(contextFraction * 100)}%
+              </Text>
+            )}
+            <Ionicons
+              name={agentControlsOpen ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={Colors.textDim}
+            />
+          </TouchableOpacity>
+
 
           {agentControlsOpen && (
             <View style={styles.agentControlsPanel}>
-              <TouchableOpacity
-                style={[styles.bypassButton, bypassEnabled && styles.bypassButtonActive]}
-                disabled={state !== 'online'}
-                onPress={handleToggleBypass}
-              >
-                <Ionicons
-                  name={bypassEnabled ? 'shield-checkmark' : 'shield-outline'}
-                  size={17}
-                  color={bypassEnabled ? Colors.background : Colors.text}
-                />
-                <Text style={[styles.bypassButtonText, bypassEnabled && styles.bypassButtonTextActive]}>
-                  Bypass approvals
-                </Text>
-              </TouchableOpacity>
+              <Text style={styles.connectionLabel} numberOfLines={1}>
+                {decodedJid}
+              </Text>
+              {(contextLabel || statusDetails.length > 0) && (
+                <View style={styles.statusMetrics}>
+                  {contextLabel && (
+                    <Text style={styles.statusMetric} numberOfLines={1}>{contextLabel}</Text>
+                  )}
+                  {statusDetails.map((detail) => (
+                    <Text key={detail} style={styles.statusMetric} numberOfLines={1}>
+                      {detail}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              <View style={styles.bypassRow}>
+                <TouchableOpacity
+                  style={[styles.bypassButton, bypassEnabled && styles.bypassButtonActive]}
+                  disabled={state !== 'online'}
+                  onPress={handleToggleBypass}
+                >
+                  <Ionicons
+                    name={bypassEnabled ? 'shield-checkmark' : 'shield-outline'}
+                    size={17}
+                    color={bypassEnabled ? Colors.background : Colors.text}
+                  />
+                  <Text style={[styles.bypassButtonText, bypassEnabled && styles.bypassButtonTextActive]}>
+                    Bypass approvals
+                  </Text>
+                </TouchableOpacity>
+              </View>
               {loadingCommands && (
                 <View style={styles.commandLoadingRow}>
                   <ActivityIndicator size="small" color={Colors.primary} />
@@ -881,6 +922,17 @@ export default function XmppChatScreen() {
           </View>
         )}
 
+        {/* Como en GTK: el consumo de contexto va pegado encima del input, no
+            en el toolbar — es lo que miras mientras escribes. */}
+        {contextFraction !== null && (
+          <View style={styles.contextBar}>
+            <View style={[styles.contextFill, {
+              width: `${Math.round(contextFraction * 100)}%`,
+              backgroundColor: contextBarColor,
+            }]} />
+          </View>
+        )}
+
         <View style={styles.inputBar}>
           <TouchableOpacity
             style={[styles.attachBtn, (state !== 'online' || attaching) && styles.sendBtnDisabled]}
@@ -944,34 +996,36 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: Colors.surfaceBorder,
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 8,
-    gap: 8,
   },
   statusStrip: {
-    gap: 6,
-    paddingHorizontal: 2,
-  },
-  statusMain: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  statusSpacer: {
+    flex: 1,
   },
   statusDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
   },
   statusActivity: {
-    color: Colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    color: Colors.textDim,
+    fontSize: 12,
     flexShrink: 1,
   },
+  statusActivityPending: {
+    color: Colors.warning,
+    fontWeight: '700',
+  },
   statusMetrics: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 6,
-    paddingRight: 8,
+    paddingBottom: 2,
   },
   statusMetric: {
     color: Colors.textDim,
@@ -1027,26 +1081,25 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   attachmentFileName: { color: Colors.primary, fontSize: 13, flexShrink: 1 },
-  modelBadge: {
-    backgroundColor: Colors.inputBackground,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    marginLeft: 4,
-  },
   modelBadgeText: {
     color: Colors.primary,
     fontSize: 11,
     fontWeight: '700',
+    flexShrink: 1,
+  },
+  contextPercent: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   contextBar: {
-    height: 6,
-    backgroundColor: Colors.surfaceBorder,
+    height: 5,
+    marginHorizontal: 12,
+    marginBottom: 4,
     borderRadius: 3,
+    backgroundColor: Colors.inputBackground,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
     overflow: 'hidden',
-    position: 'relative',
   },
   contextFill: {
     height: '100%',
@@ -1056,24 +1109,9 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
   },
-  contextBarLabel: {
-    color: Colors.textDim,
-    fontSize: 10,
-    position: 'absolute',
-    right: 4,
-    top: -15,
-  },
-  statusFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 4,
-    gap: 8,
-  },
   connectionLabel: {
     color: Colors.textDim,
     fontSize: 11,
-    flex: 1,
   },
   headerRight: {
     flexDirection: 'row',
@@ -1150,20 +1188,16 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.surfaceBorder,
   },
   hydrationText: { color: Colors.textDim, fontSize: 12, fontWeight: '600' },
-  agentControlsToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-  },
-  agentControlsToggleText: { color: Colors.textDim, fontSize: 12, fontWeight: '600' },
   agentControlsPanel: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 2,
+    paddingBottom: 8,
+  },
+  bypassRow: {
+    flexDirection: 'row',
     flexWrap: 'wrap',
+    gap: 8,
   },
   commandLoadingRow: {
     flexDirection: 'row',

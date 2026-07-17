@@ -210,8 +210,8 @@ export const XmppHistory = {
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM messages '
         + 'WHERE bare_jid = ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, limit],
@@ -223,8 +223,8 @@ export const XmppHistory = {
   async getBefore(bareJid: string, beforeTimestamp: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM messages '
         + 'WHERE bare_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, beforeTimestamp, limit],

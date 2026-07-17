@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { XmppMessage } from '@/types/xmpp';
 import { PushStatus } from '@/xmpp/pushStatus';
+import { displayName } from '@/xmpp/presence';
 
 const PUSH_TOKEN_KEY = '@gtk_llm_chat:expo_push_token';
 const XMPP_MESSAGES_CHANNEL = 'xmpp_messages';
@@ -149,15 +150,43 @@ export async function dismissNotificationForJid(jid: string): Promise<void> {
   );
 }
 
+/**
+ * Un mensaje con <delay> (XEP-0203) es un replay: el servidor reenvía historial
+ * al reconectar. Notificarlo produce una avalancha de avisos de conversaciones
+ * viejas cada vez que la app recupera la conexión, así que sólo notificamos lo
+ * que acaba de pasar. El gateway aplica este mismo corte.
+ */
+const REPLAY_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** Ids ya notificados: el mismo mensaje puede llegar en vivo y por carbon. */
+const notifiedIds = new Set<string>();
+
+function isReplay(msg: XmppMessage): boolean {
+  const ts = new Date(msg.timestamp).getTime();
+  if (Number.isNaN(ts)) return false;
+  return Date.now() - ts > REPLAY_MAX_AGE_MS;
+}
+
 // Show notification for incoming XMPP message
 export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
   if (isForeground) return; // Don't notify when app is open
   // Tampoco notificar el chat que el usuario está mirando.
   if (activeChatJid && bareJid(msg.from) === activeChatJid) return;
+  // Ni historial reenviado tras una reconexión.
+  if (isReplay(msg)) return;
+  if (msg.id) {
+    if (notifiedIds.has(msg.id)) return;
+    notifiedIds.add(msg.id);
+    // Cota simple: sólo necesitamos memoria reciente para dedup.
+    if (notifiedIds.size > 500) {
+      for (const id of notifiedIds) {
+        notifiedIds.delete(id);
+        if (notifiedIds.size <= 250) break;
+      }
+    }
+  }
 
-  const title = contactName
-    || contactNameCache.get(bareJid(msg.from))
-    || msg.from
+  const title = displayName(msg.from, contactName || contactNameCache.get(bareJid(msg.from)))
     || 'Nuevo mensaje';
   const body = msg.body.length > 200 ? msg.body.slice(0, 197) + '...' : msg.body;
 

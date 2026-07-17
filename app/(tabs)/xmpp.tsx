@@ -8,11 +8,13 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { Colors } from '@/constants/theme';
+import { displayName, presenceColor, presenceLabel } from '@/xmpp/presence';
 import type { XmppContact, XmppMessage } from '@/types/xmpp';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -23,20 +25,6 @@ const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
 /** The server we're on — the roster's heading, e.g. hablar.fuentelibre.org */
 function hostOf(jid: string): string {
   return jid.split('@')[1]?.split('/')[0] || jid;
-}
-
-// Presence is binary here, matching the GTK client's _presence_dot: a contact
-// is either available or not. away/dnd/xa all read as "not online".
-function isOnline(presence: string): boolean {
-  return presence === 'online';
-}
-
-function presenceColor(presence: string): string {
-  return isOnline(presence) ? Colors.success : Colors.muted;
-}
-
-function presenceLabel(presence: string): string {
-  return isOnline(presence) ? 'En línea' : 'Desconectado';
 }
 
 function latestMessage(a?: XmppMessage, b?: XmppMessage): XmppMessage | undefined {
@@ -59,6 +47,9 @@ export default function XmppScreen() {
   const [password, setPassword] = useState('');
   const [server, setServer] = useState('wss://hablar.fuentelibre.org:5281/xmpp-websocket');
   const [resource, setResource] = useState('gtk-llm-chat');
+  // Avatares XEP-0084: llegan por PEP cuando el contacto los publica, así que
+  // el roster tiene que repintarse al vuelo (no basta con leerlos al montar).
+  const [avatars, setAvatars] = useState<Map<string, string>>(() => new Map());
   const [cachedPreviews, setCachedPreviews] = useState<Map<string, XmppMessage>>(() => new Map());
   const [loadingPreviews, setLoadingPreviews] = useState(false);
   const router = useRouter();
@@ -70,6 +61,60 @@ export default function XmppScreen() {
   // The header sits at the top of the screen with no navigation bar above it,
   // so it must clear the status bar itself.
   const insets = useSafeAreaInsets();
+
+  const previewFor = useCallback(
+    (jid: string) => {
+      const history = messages.get(jid) || [];
+      return latestMessage(history[history.length - 1], cachedPreviews.get(jid));
+    },
+    [messages, cachedPreviews],
+  );
+
+  // Roster por actividad reciente, como cualquier app de chat: la conversación
+  // que se acaba de mover va arriba. Los contactos sin historial quedan al
+  // final, por nombre, en vez de mezclarse entre las conversaciones vivas.
+  const sortedContacts = useMemo(() => {
+    const activityOf = (jid: string) => {
+      const msg = previewFor(jid);
+      if (!msg) return 0;
+      const ms = new Date(msg.timestamp).getTime();
+      return Number.isNaN(ms) ? 0 : ms;
+    };
+    return [...contacts].sort((a, b) => {
+      const diff = activityOf(b.jid) - activityOf(a.jid);
+      if (diff !== 0) return diff;
+      return displayName(a.jid, a.name).localeCompare(displayName(b.jid, b.name));
+    });
+  }, [contacts, previewFor]);
+
+  useEffect(() => {
+    // Sembramos con lo ya cacheado (los eventos PEP sólo llegan cuando el
+    // contacto publica algo nuevo; uno que no cambió su avatar no emitiría).
+    setAvatars((prev) => {
+      const next = new Map(prev);
+      for (const contact of contacts) {
+        const uri = XmppService.getAvatarUri(contact.jid);
+        if (uri) next.set(contact.jid, uri);
+      }
+      return next;
+    });
+    // Y preguntamos por los que aún no tenemos: quien publicó su avatar antes
+    // de que nos conectáramos no emite ningún evento PEP.
+    for (const contact of contacts) {
+      if (!XmppService.getAvatarUri(contact.jid)) {
+        void XmppService.fetchAvatar(contact.jid);
+      }
+    }
+    const unsubscribe = XmppService.onAvatarChange((jid, uri) => {
+      setAvatars((prev) => {
+        const next = new Map(prev);
+        if (uri) next.set(jid, uri);
+        else next.delete(jid);
+        return next;
+      });
+    });
+    return () => { unsubscribe(); };
+  }, [contacts]);
 
   // Auto-connect if account is configured
   useEffect(() => {
@@ -154,7 +199,7 @@ export default function XmppScreen() {
         </View>
 
         <FlatList
-          data={contacts}
+          data={sortedContacts}
           keyExtractor={(item) => item.jid}
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
@@ -164,11 +209,7 @@ export default function XmppScreen() {
             </View>
           }
           renderItem={({ item }: { item: XmppContact }) => {
-            const msgHistory = messages.get(item.jid) || [];
-            const lastMsg = latestMessage(
-              msgHistory[msgHistory.length - 1],
-              cachedPreviews.get(item.jid),
-            );
+            const lastMsg = previewFor(item.jid);
             return (
               <TouchableOpacity
                 style={styles.contactCard}
@@ -177,11 +218,15 @@ export default function XmppScreen() {
                 <View style={styles.contactRow}>
                   <View style={styles.avatar}>
                     <View style={[styles.presenceIndicator, { backgroundColor: presenceColor(item.presence) }]} />
-                    <Ionicons name="person" size={28} color={Colors.text} />
+                    {avatars.get(item.jid) ? (
+                      <Image source={{ uri: avatars.get(item.jid)! }} style={styles.avatarImage} />
+                    ) : (
+                      <Ionicons name="person" size={28} color={Colors.text} />
+                    )}
                   </View>
                   <View style={styles.contactInfo}>
                     <Text style={styles.contactName} numberOfLines={1}>
-                      {item.name || item.jid}
+                      {displayName(item.jid, item.name)}
                     </Text>
                     {/* Like the GTK roster: the contact's own status text when
                         they set one, otherwise fall back to their presence. */}
@@ -351,6 +396,12 @@ const styles = StyleSheet.create({
   },
   avatar: {
     position: 'relative',
+  },
+  avatarImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.inputBackground,
   },
   presenceIndicator: {
     position: 'absolute',
