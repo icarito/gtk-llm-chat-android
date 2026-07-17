@@ -445,15 +445,51 @@ export default function XmppChatScreen() {
   // y además PEDIMOS el valor actual al abrir: los eventos sólo llegan cuando el
   // agente publica algo nuevo, así que uno que lleva rato quieto no emitiría nada
   // y la barra se quedaría vacía para siempre.
+  //
+  // Depende también de `state`: al abrir esta pantalla directo desde un arranque
+  // en frío (navegación automática al último chat, o desde una notificación),
+  // el componente monta en el mismo tick en que la conexión pasa a 'online' —
+  // pedir el IQ ANTES de eso no sirve (fetchAgentTelemetry se aborta si no hay
+  // conexión), y como el efecto sólo corría una vez, la pantalla se quedaba con
+  // lo cacheado en memoria (potencialmente viejo) hasta salir y volver a entrar.
   useEffect(() => {
     const cached = XmppService.getAgentTelemetry(decodedJid);
     if (cached) setTelemetry(cached);
+    // El nodo PEP persiste el último item publicado (pubsub#persist_items,
+    // max_items=1): al reconectar tras un reinicio del gateway, el servidor
+    // puede reenviar ese item VIEJO por la suscripción -- de una sesión
+    // anterior del agente, con otro modelo/contexto -- antes de que el propio
+    // gateway alcance a republicar el valor real (lo hace casi al arrancar,
+    // pero no hay garantía de orden entre ambos). Marcamos el fetch explícito
+    // como la fuente de verdad reciente: si justo después llega un evento en
+    // vivo con OTRO modelo, es ese residuo, y repetimos el fetch para
+    // asentarnos en el valor bueno en vez de quedarnos con el viejo.
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    let trustedModel: string | undefined;
+    let fetchSettled = false;
     const unsub = XmppService.onTelemetry((jid, data) => {
-      if (jid === decodedJid) setTelemetry({ ...data });
+      if (jid !== decodedJid) return;
+      const model = data.model as string | undefined;
+      if (fetchSettled && trustedModel && model && model !== trustedModel) {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          if (state === 'online') XmppService.fetchAgentTelemetry(decodedJid);
+        }, 3000);
+      } else {
+        trustedModel = model ?? trustedModel;
+      }
+      setTelemetry({ ...data });
     });
-    XmppService.fetchAgentTelemetry(decodedJid);
-    return () => { unsub(); };
-  }, [decodedJid]);
+    if (state === 'online') {
+      XmppService.fetchAgentTelemetry(decodedJid).then(() => {
+        fetchSettled = true;
+      });
+    }
+    return () => {
+      unsub();
+      if (settleTimer) clearTimeout(settleTimer);
+    };
+  }, [decodedJid, state]);
 
   const contextFraction = useMemo(() => {
     const used = telemetry.context_used as number | undefined;

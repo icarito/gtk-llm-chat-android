@@ -5,7 +5,18 @@ node_modules/
 .expo/
 dist/
 web-build/
-android/
+# android/ SE VERSIONA: este proyecto tiene código nativo propio (el módulo
+# XMPP y su foreground service), así que no puede regenerarse entero desde
+# app.json. Ignoramos sólo lo que produce el build.
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+android/app/google-services.json
+android/gradle.properties
+# Keystore de depuración: lo regenera el SDK, y ningún keystore va a git.
+android/app/debug.keystore
 *.orig.*
 *.jks
 *.p8

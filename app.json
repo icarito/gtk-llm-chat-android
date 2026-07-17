@@ -15,7 +15,8 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0A0E14"
+        "monochromeImage": "./assets/monochrome-icon.png",
+        "backgroundColor": "#FFFFFF"
       },
       "package": "org.fuentelibre.gtk_llm_chat",
       "versionCode": 2,

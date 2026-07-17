@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">hablar.fuentelibre.org</domain>
+        <!-- Metro dev server, reached over `adb reverse`. A network-security-config
+             overrides android:usesCleartextTraffic, so without listing loopback here
+             the debug build cannot load its JS bundle. -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

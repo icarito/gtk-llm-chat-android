@@ -1,46 +1,77 @@
 # AGENTS.md — gtk-llm-chat-android
 
-Mobile companion for gtk-llm-chat. Android React Native app with embedded Python
-backend (Chaquopy).
+Cliente XMPP para Android, compañero móvil de gtk-llm-chat. Habla directamente
+con el servidor XMPP (hablar.fuentelibre.org) para chatear con los agentes de
+OpenClaw; no hay backend propio.
 
-## Architecture
+## Arquitectura
 
 ```
-app/           → Expo Router (file-based routing)
-  (tabs)/      → Bottom tab navigator (Chats, Settings)
-  conversation/[cid].tsx → Chat screen with streaming
+app/                       → Expo Router (rutas por fichero)
+  (tabs)/xmpp.tsx          → Roster: contactos, presencia, avatares
+  xmpp-chat/[jid].tsx      → Pantalla de chat
+  _layout.tsx              → Layout raíz: fuentes, notificaciones, ruteo de push
 src/
-  types/       → Domain types (Conversation, Message, ModelInfo, etc.)
-  api/         → REST + WebSocket client for the Python backend
-  hooks/       → useChatStream (WebSocket streaming hook)
-  components/  → MessageBubble, ConversationCard, ModelSelector, MarkdownRenderer
-  constants/   → Dark theme colors
-python/
-  server.py    → FastAPI server (HTTP + WebSocket)
-  headless_llm_client.py → Adapted LLMClient (no GTK/GObject)
-  android_keys.py → Read API keys from env vars
-  vendored/    → Vendored pure-Python modules from gtk-llm-chat
+  xmpp/
+    XmppService.ts         → Conexión única, viva todo el ciclo de la app.
+                             Los componentes se suscriben; nunca son dueños de
+                             la conexión.
+    XmppContext.tsx        → Puente React del servicio
+    XmppHistory.ts         → Caché local (expo-sqlite) + MAM
+    notifications.ts       → Notificaciones locales + push XEP-0357
+    presence.ts            → Color/etiqueta de presencia y nombre legible
+    ForegroundService.ts   → Puente al servicio nativo
+    xep-0004.ts            → Formularios de datos
+    xep-0050.ts            → Comandos ad-hoc
+    xep-0308.ts            → Corrección de mensajes
+  constants/               → Tema oscuro
+android/
+  app/src/main/java/…      → Módulo nativo: foreground service del XMPP.
+                             SE VERSIONA (ver más abajo).
 ```
 
 ## Stack
 
 - Expo SDK 52 + Expo Router v4
-- TypeScript strict mode
-- Dark theme only (`#0A0E14` background)
-- Python backend: FastAPI + uvicorn + llm
+- TypeScript en modo estricto (`any` prohibido)
+- Tema oscuro (`#0A0E14`)
+- `@xmpp/client` sobre WebSocket
 
-## Rules
+## Trampas que ya nos han mordido
 
-- TypeScript strict mode is on. No `any`.
-- All API calls go through `src/api/client.ts`.
-- API keys stored in expo-secure-store, passed to Python via env vars.
-- The WebSocket protocol follows the design in `specs/006-.../design.md`.
-- Vendored Python files include a header pointing to the source gtk-llm-chat
-  commit.
+- **`android/` se versiona.** Este proyecto tiene código nativo propio, así que
+  no se regenera entero desde `app.json`. El `.gitignore` sólo excluye lo que
+  produce el build.
+- **Los iconos salen de `app.json`**, no de editar `android/app/src/main/res/`
+  a mano: un `prebuild` regenera ese directorio. El arte de `assets/` ya lleva
+  su margen (Android sólo garantiza el 66% central del adaptive icon).
+- **El `ver` de las caps XEP-0115 no es un SHA-1 real** (no hay SHA-1 en el
+  bundle de RN): es un identificador opaco. Si cambias `CAPS_FEATURES`, **súbelo
+  a mano** o el servidor, que cachea por `node#ver`, no volverá a preguntar y
+  los features nuevos no se anunciarán. Falla en silencio.
+- **Los eventos PEP sólo llegan cuando el contacto publica.** Telemetría y
+  avatares necesitan además un *fetch* inicial (`fetchAgentTelemetry`,
+  `fetchAvatar`), o un contacto que publicó antes de que nos conectáramos no se
+  vería nunca.
+- **El recurso XMPP lleva un sufijo estable por dispositivo**
+  (`deviceResource.ts`). Con un sufijo aleatorio por arranque el servidor no
+  reconoce la sesión anterior y la deja viva: llegamos a acumular 317 sesiones
+  zombi, cada una recibiendo carbons y disparando push.
+- **No leas la global `xmppClient` después de un `await`.** El auto-retry la
+  pone a `null` al caer la conexión; captura la referencia antes.
+- **Android 12+ prohíbe arrancar un foreground service desde background.** Sólo
+  se inicia con la app en primer plano; si no, cada intento es denegado y
+  alimenta un bucle.
 
-## References
+## Verificar
 
-- gtk-llm-chat docs: `../gtk-llm-chat/docs/architecture.md`
-- gtk-llm-chat data model: `../gtk-llm-chat/docs/data-model.md`
-- Spec (this project): `../gtk-llm-chat/specs/006-android-react-native-frontend/`
-- Odisea_Dashboard template: `../Odisea_Dashboard/`
+```
+make check     # type-check + lint + tests
+npm start      # Metro; con adb reverse tcp:8081 tcp:8081 por USB
+make reinstall-release   # sólo si tocas código nativo, permisos o Firebase
+```
+
+## Referencias
+
+- Cliente de escritorio: `../gtk-llm-chat/`
+- Plugin XMPP de OpenClaw: `../claudio-w/extensions/xmpp/`
