@@ -229,6 +229,17 @@ export function parseInlineCommands(stanza: Element): XmppInlineCommand[] {
   return commands;
 }
 
+export function parseActionMetadata(stanza: Element): {
+  quickResponses: XmppQuickResponse[];
+  commands: XmppInlineCommand[];
+} {
+  const commands = parseInlineCommands(stanza);
+  return {
+    commands,
+    quickResponses: commands.length > 0 ? [] : parseQuickResponses(stanza),
+  };
+}
+
 /**
  * Extrae la telemetría del <telemetry/> publicado en el nodo PEP.
  * Espejo de parse_telemetry() en xmpp_client.py del cliente GTK.
@@ -326,6 +337,8 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
 
   const mamId = (mamResult.attrs.id as string) || '';
 
+  const actions = parseActionMetadata(message);
+
   return {
     id: (message.attrs.id as string) || mamId || `mam-${timestamp}`,
     mamId: mamId || null,
@@ -336,8 +349,8 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
     timestamp,
     direction,
     isGroup: type === 'groupchat',
-    quickResponses: parseQuickResponses(message),
-    commands: parseInlineCommands(message),
+    quickResponses: actions.quickResponses,
+    commands: actions.commands,
     replyTo: extractReply(message),
     oobUrl: extractOobUrl(message, body),
   };
@@ -366,6 +379,7 @@ let pingTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectPromise: Promise<void> | null = null;
 /** Reintento propio tras una caída detectada por nosotros (ver scheduleReconnect). */
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingActionExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
 /** true tras un disconnect() explícito: no reconectar a espaldas del usuario. */
 let userStopped = false;
@@ -468,7 +482,42 @@ function notifyMessages() {
 }
 
 function notifyPendingActions() {
+  pruneExpiredPendingActions();
+  schedulePendingActionExpiry();
   pendingActionListeners.forEach((fn) => fn([...pendingActions.values()]));
+}
+
+function isPendingActionExpired(action: XmppPendingAction, now = Date.now()): boolean {
+  return action.expiresAtMs !== undefined && action.expiresAtMs <= now;
+}
+
+function pruneExpiredPendingActions(now = Date.now()): boolean {
+  let changed = false;
+  for (const [id, action] of pendingActions) {
+    if (isPendingActionExpired(action, now)) {
+      pendingActions.delete(id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function schedulePendingActionExpiry() {
+  if (pendingActionExpiryTimer) {
+    clearTimeout(pendingActionExpiryTimer);
+    pendingActionExpiryTimer = null;
+  }
+  const now = Date.now();
+  const expiries = [...pendingActions.values()]
+    .map((action) => action.expiresAtMs)
+    .filter((value): value is number => value !== undefined && value > now);
+  if (expiries.length === 0) return;
+  const delay = Math.max(250, Math.min(...expiries) - now);
+  pendingActionExpiryTimer = setTimeout(() => {
+    pendingActionExpiryTimer = null;
+    if (pruneExpiredPendingActions()) notifyPendingActions();
+    else schedulePendingActionExpiry();
+  }, delay);
 }
 
 function expireMatchingQuickResponses(conversationJid: string, body: string, msgTimestamp: string) {
@@ -517,11 +566,12 @@ function addPendingActions(
   const timestampMs = new Date(msg.timestamp).getTime();
   const detail = markdownToPlain(msg.body ?? '');
   const now = Date.now();
-  // Descartar quick-responses ya caducados por expiresAtMs explícito.
+  // Descartar acciones ya caducadas por expiresAtMs explícito.
   const liveQr = quickResponsesIn.filter((r) => r.expiresAtMs === undefined || r.expiresAtMs > now);
+  const liveCommands = commandsIn.filter((command) => command.expiresAtMs === undefined || command.expiresAtMs > now);
   // Preferir command-items (IQ) sobre quick-responses (texto) cuando llegan
   // ambos (paridad con el GTK): no dejar el `value` crudo visible.
-  const commands = commandsIn;
+  const commands = liveCommands;
   const quickResponses = commands.length > 0 ? [] : liveQr;
   quickResponses.forEach((response, index) => {
     const id = `${msg.id}:qr:${index}:${response.value}`;
@@ -551,6 +601,7 @@ function addPendingActions(
       jid: command.jid,
       node: command.node,
       ...(command.style ? { style: command.style } : {}),
+      ...(command.expiresAtMs !== undefined ? { expiresAtMs: command.expiresAtMs } : {}),
     });
   });
 
@@ -1043,6 +1094,8 @@ export const XmppService = {
   },
 
   getPendingActions(): XmppPendingAction[] {
+    pruneExpiredPendingActions();
+    schedulePendingActionExpiry();
     return [...pendingActions.values()];
   },
 
@@ -1160,7 +1213,12 @@ export const XmppService = {
         }
       } catch {
         // Lo normal si el contacto no es un agente, o si no tiene este nodo
-        // en particular (probamos el otro namespace a continuación).
+        // en particular (probamos el otro namespace a continuación). Si
+        // fallan los dos nodos, la pantalla se queda con lo cacheado en
+        // agentTelemetry -- que puede ser viejo (el mapa vive mientras el
+        // proceso de la app esté vivo) -- así que un fallo de red aquí no es
+        // inocuo, sólo no hay mejor señal disponible que degradarse en
+        // silencio a ese valor.
       }
     }
   },
@@ -1486,6 +1544,7 @@ export const XmppService = {
               return;
             }
 
+            const actions = parseActionMetadata(message);
             const carbonMsg: XmppMessage = {
               id: msgId,
               from: fromBare,
@@ -1495,8 +1554,8 @@ export const XmppService = {
               timestamp: delayTs,
               direction,
               isGroup: false,
-              quickResponses: parseQuickResponses(message),
-              commands: parseInlineCommands(message),
+              quickResponses: actions.quickResponses,
+              commands: actions.commands,
               replyTo: extractReply(message),
               oobUrl: extractOobUrl(message, carbonBody),
             };
@@ -1543,8 +1602,7 @@ export const XmppService = {
 
       const isGroup = type === 'groupchat' || isGroupJidEx(platformId, undefined);
       const isMention = !isGroup || messageMentionsBot(stanza, body, botNick, config.jid);
-      const quickResponses = parseQuickResponses(stanza);
-      const commands = parseInlineCommands(stanza);
+      const { quickResponses, commands } = parseActionMetadata(stanza);
 
       const msg: XmppMessage = {
         id: (stanza.attrs.id as string) || `${Date.now()}`,
@@ -1730,6 +1788,10 @@ export const XmppService = {
   async answerPendingAction(actionId: string): Promise<void> {
     const action = pendingActions.get(actionId);
     if (!action) return;
+    if (isPendingActionExpired(action)) {
+      removePendingAction(actionId);
+      return;
+    }
     if (action.kind === 'quick-response') {
       await this.sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
     } else if (action.jid && action.node) {
