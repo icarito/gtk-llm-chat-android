@@ -1831,14 +1831,10 @@ export const XmppService = {
     return executeCommand(targetJid, node);
   },
 
-  async setApprovalBypass(targetJid: string, enabled: boolean, minutes = 15): Promise<string> {
-    return executeCommand(targetJid, 'approval-bypass', {
-      type: 'submit',
-      fields: [
-        { var: 'mode', type: 'list-single', value: enabled ? 'on' : 'off' },
-        { var: 'minutes', type: 'text-single', value: String(minutes) },
-      ],
-    });
+  async setApprovalBypass(targetJid: string, enabled: boolean, _minutes = 15): Promise<string> {
+    const mode = enabled ? 'on' : 'off';
+    await this.sendMessage(targetJid, `/oc approval-bypass ${mode}`, 'chat');
+    return `approval-bypass ${mode} enviado`;
   },
 
   async sendTyping(to: string) {
