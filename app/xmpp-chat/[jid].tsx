@@ -15,6 +15,7 @@ import {
   Image,
   Linking,
   Alert,
+  Clipboard,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { useLocalSearchParams, Stack } from 'expo-router';
@@ -34,6 +35,75 @@ const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
 const URL_RE = /https?:\/\/[^\s<>"']+/g;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(\?|#|$)/i;
 const TRAILING_URL_PUNCT_RE = /[.,;:!?)\]}]+$/;
+const CODE_FENCE_RE = /```([^\n`]*)\n?([\s\S]*?)```/g;
+
+type MessagePart =
+  | { type: 'text'; value: string }
+  | { type: 'code'; value: string; language?: string };
+
+function splitCodeFences(content: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  CODE_FENCE_RE.lastIndex = 0;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CODE_FENCE_RE.exec(content)) !== null) {
+    if (match.index > cursor) {
+      parts.push({ type: 'text', value: content.slice(cursor, match.index) });
+    }
+    const language = (match[1] || '').trim().split(/\s+/)[0];
+    parts.push({
+      type: 'code',
+      value: (match[2] || '').replace(/\n$/, ''),
+      ...(language ? { language } : {}),
+    });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < content.length) {
+    parts.push({ type: 'text', value: content.slice(cursor) });
+  }
+  return parts.length ? parts : [{ type: 'text', value: content }];
+}
+
+function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
+  return (
+    <View style={styles.messageBody}>
+      {splitCodeFences(body).map((part, index) => {
+        if (part.type === 'code') {
+          return (
+            <View key={`code-${index}`} style={styles.codeBlock}>
+              <View style={styles.codeHeader}>
+                <Text style={styles.codeLanguage} numberOfLines={1}>
+                  {part.language || 'code'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.codeCopyButton}
+                  onPress={() => Clipboard.setString(part.value)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Copiar código"
+                >
+                  <Ionicons name="copy-outline" size={16} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <Text selectable style={styles.codeText}>{part.value || ' '}</Text>
+              </ScrollView>
+            </View>
+          );
+        }
+        if (!part.value.trim()) return null;
+        return (
+          <Text
+            key={`text-${index}`}
+            selectable
+            style={[styles.messageText, isMine && styles.messageTextMine]}
+          >
+            {part.value}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
 
 /** ¿El adjunto es una imagen? (por extensión del link de XEP-0363). */
 function isImageUrl(url: string): boolean {
@@ -603,7 +673,7 @@ export default function XmppChatScreen() {
             ) : null}
             {/* El body de un adjunto suele repetir la URL o una etiqueta genérica. */}
             {visibleBody ? (
-              <Text style={[styles.messageText, isMine && styles.messageTextMine]}>{visibleBody}</Text>
+              <MessageBody body={visibleBody} isMine={isMine} />
             ) : null}
             <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
               {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -988,8 +1058,47 @@ const styles = StyleSheet.create({
   },
   bubbleRight: { backgroundColor: Colors.userBubble, borderBottomRightRadius: 4 },
   senderName: { fontSize: 12, fontWeight: '600', color: Colors.primary, marginBottom: 4 },
+  messageBody: { gap: 6 },
   messageText: { fontSize: 15, color: Colors.text, lineHeight: 21 },
   messageTextMine: { color: Colors.userBubbleText },
+  codeBlock: {
+    minWidth: 220,
+    overflow: 'hidden',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    backgroundColor: 'rgba(0,0,0,0.16)',
+  },
+  codeHeader: {
+    minHeight: 30,
+    paddingLeft: 8,
+    paddingRight: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  codeLanguage: {
+    flex: 1,
+    color: Colors.textDim,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  codeCopyButton: {
+    width: 30,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+  },
+  codeText: {
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    color: Colors.text,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    fontSize: 13,
+    lineHeight: 18,
+  },
   timestamp: { fontSize: 11, color: Colors.textDim, marginTop: 4, alignSelf: 'flex-end' },
   timestampMine: { color: 'rgba(255,255,255,0.7)' },
   agentToolbar: {
