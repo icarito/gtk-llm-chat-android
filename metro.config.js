@@ -13,6 +13,18 @@ config.resolver.extraNodeModules = {
 };
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // expo-quick-actions publica su entry SOLO vía "exports" (sin "main");
+  // este Metro (SDK 52, package exports off) cae al default `index` que no
+  // existe. Mapeo directo al build real.
+  if (moduleName === 'expo-quick-actions') {
+    return {
+      type: 'sourceFile',
+      filePath: path.join(
+        __dirname,
+        'node_modules/expo-quick-actions/build/index.js',
+      ),
+    };
+  }
   if (
     moduleName === '@xmpp/tcp' ||
     moduleName === '@xmpp/tls' ||
