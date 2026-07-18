@@ -540,6 +540,46 @@ function isPendingActionExpired(action: XmppPendingAction, now = Date.now()): bo
   return action.expiresAtMs !== undefined && action.expiresAtMs <= now;
 }
 
+const APPROVAL_FALLBACK_MAX_AGE_MS = 60 * 1000;
+
+function bodyLooksLikeApproval(body: string): boolean {
+  const text = body.toLowerCase();
+  return text.includes('approval')
+    || text.includes('aprobación')
+    || text.includes('aprobacion')
+    || text.includes('pending command')
+    || text.includes('🔒');
+}
+
+export function actionsLookLikeApproval(
+  body: string,
+  quickResponses: XmppQuickResponse[],
+  commands: XmppInlineCommand[],
+): boolean {
+  if (bodyLooksLikeApproval(body)) return true;
+  const words = ['allow', 'approve', 'deny', 'reject', 'permitir', 'aprobar', 'denegar', 'rechazar'];
+  const labels = [
+    ...quickResponses.map((action) => action.label),
+    ...commands.map((action) => action.name),
+  ].map((label) => label.trim().toLowerCase());
+  if (labels.some((label) => words.some((word) => label.includes(word)))) return true;
+  return commands.some((action) => {
+    const node = action.node.toLowerCase();
+    return node.includes('approve') || node.includes('approval');
+  });
+}
+
+export function approvalFallbackExpiry(
+  msg: XmppMessage,
+  quickResponses: XmppQuickResponse[],
+  commands: XmppInlineCommand[],
+): number | undefined {
+  if (!actionsLookLikeApproval(msg.body, quickResponses, commands)) return undefined;
+  const timestampMs = new Date(msg.timestamp).getTime();
+  return (Number.isFinite(timestampMs) ? timestampMs : Date.now())
+    + APPROVAL_FALLBACK_MAX_AGE_MS;
+}
+
 function pruneExpiredPendingActions(now = Date.now()): boolean {
   let changed = false;
   for (const [id, action] of pendingActions) {
@@ -631,9 +671,14 @@ function addPendingActions(
   const timestampMs = new Date(msg.timestamp).getTime();
   const detail = markdownToPlain(msg.body ?? '');
   const now = Date.now();
+  const fallbackExpiry = approvalFallbackExpiry(msg, quickResponsesIn, commandsIn);
   // Descartar acciones ya caducadas por expiresAtMs explícito.
-  const liveQr = quickResponsesIn.filter((r) => r.expiresAtMs === undefined || r.expiresAtMs > now);
-  const liveCommands = commandsIn.filter((command) => command.expiresAtMs === undefined || command.expiresAtMs > now);
+  const liveQr = quickResponsesIn.filter(
+    (r) => (r.expiresAtMs ?? fallbackExpiry ?? Number.POSITIVE_INFINITY) > now,
+  );
+  const liveCommands = commandsIn.filter(
+    (command) => (command.expiresAtMs ?? fallbackExpiry ?? Number.POSITIVE_INFINITY) > now,
+  );
   // Preferir command-items (IQ) sobre quick-responses (texto) cuando llegan
   // ambos (paridad con el GTK): no dejar el `value` crudo visible.
   const commands = liveCommands;
@@ -650,7 +695,9 @@ function addPendingActions(
       label: response.label,
       value: response.value,
       ...(response.style ? { style: response.style } : {}),
-      ...(response.expiresAtMs !== undefined ? { expiresAtMs: response.expiresAtMs } : {}),
+      ...((response.expiresAtMs ?? fallbackExpiry) !== undefined
+        ? { expiresAtMs: response.expiresAtMs ?? fallbackExpiry }
+        : {}),
     });
   });
   commands.forEach((command, index) => {
@@ -666,7 +713,9 @@ function addPendingActions(
       jid: command.jid,
       node: command.node,
       ...(command.style ? { style: command.style } : {}),
-      ...(command.expiresAtMs !== undefined ? { expiresAtMs: command.expiresAtMs } : {}),
+      ...((command.expiresAtMs ?? fallbackExpiry) !== undefined
+        ? { expiresAtMs: command.expiresAtMs ?? fallbackExpiry }
+        : {}),
     });
   });
 
@@ -1147,9 +1196,17 @@ async function restorePendingQuickResponses(contactJid: string, messages: XmppMe
     if (quickResponses.length === 0 && commands.length === 0) continue;
 
     // Descartar acciones caducadas (por expiresAtMs o por antigüedad > 15 min).
-    const freshQr = quickResponses.filter((r) => !isRestoredActionStale(msg.timestamp, r));
-    const freshCmd = commands.filter((c) => !isRestoredActionStale(msg.timestamp, c));
-    if (freshQr.length === 0 && freshCmd.length === 0) continue;
+    const fallbackExpiry = approvalFallbackExpiry(msg, quickResponses, commands);
+    const freshQr = quickResponses.filter((r) => !isRestoredActionStale(
+      msg.timestamp, { ...r, expiresAtMs: r.expiresAtMs ?? fallbackExpiry },
+    ));
+    const freshCmd = commands.filter((c) => !isRestoredActionStale(
+      msg.timestamp, { ...c, expiresAtMs: c.expiresAtMs ?? fallbackExpiry },
+    ));
+    if (freshQr.length === 0 && freshCmd.length === 0) {
+      XmppHistory.markResolvedByStanzaId(contactJid, msg.id).catch(() => {});
+      continue;
+    }
 
     // ¿Ya se respondió? Se comprueba con los values de los quick-responses
     // (una respuesta deja un mensaje saliente con ese texto). OJO: un

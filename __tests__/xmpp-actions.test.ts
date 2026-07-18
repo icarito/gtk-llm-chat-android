@@ -1,5 +1,12 @@
 import { parse } from 'ltx';
-import { parseActionMetadata, parseInlineCommands, parseQuickResponses } from '@/xmpp/XmppService';
+import {
+  actionsLookLikeApproval,
+  approvalFallbackExpiry,
+  parseActionMetadata,
+  parseInlineCommands,
+  parseQuickResponses,
+} from '@/xmpp/XmppService';
+import type { XmppMessage } from '@/types/xmpp';
 
 describe('NanoClaw XMPP action metadata', () => {
   it('parses standard and legacy quick responses', () => {
@@ -75,5 +82,41 @@ describe('NanoClaw XMPP action metadata', () => {
         },
       ],
     });
+  });
+
+  it('recognizes legacy approvals and assigns a 60-second fallback expiry', () => {
+    const timestamp = '2026-07-18T12:00:00.000Z';
+    const quickResponses = [{ label: 'Confirm', value: 'opaque-token' }];
+    const message = {
+      id: 'approval-1',
+      from: 'agent@example.org',
+      to: 'me@example.org',
+      type: 'chat',
+      body: '🔒 Pending command: rm temporary-file',
+      timestamp,
+      direction: 'in',
+      isGroup: false,
+    } satisfies XmppMessage;
+
+    expect(actionsLookLikeApproval(message.body, quickResponses, [])).toBe(true);
+    expect(approvalFallbackExpiry(message, quickResponses, []))
+      .toBe(new Date(timestamp).getTime() + 60_000);
+  });
+
+  it('does not assign the approval fallback to ordinary quick responses', () => {
+    const message = {
+      id: 'question-1',
+      from: 'agent@example.org',
+      to: 'me@example.org',
+      type: 'chat',
+      body: 'Elige un color',
+      timestamp: '2026-07-18T12:00:00.000Z',
+      direction: 'in',
+      isGroup: false,
+    } satisfies XmppMessage;
+    const responses = [{ label: 'Azul', value: 'blue' }];
+
+    expect(actionsLookLikeApproval(message.body, responses, [])).toBe(false);
+    expect(approvalFallbackExpiry(message, responses, [])).toBeUndefined();
   });
 });
