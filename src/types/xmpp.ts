@@ -43,6 +43,12 @@ export interface XmppMessage {
     sender: string;
   } | null;
   oobUrl?: string | null;
+  /** Epoch ms de la última corrección XEP-0308 aplicada — mientras sea
+   *  reciente, la burbuja se pinta como "en curso" (streaming del gateway). */
+  correctedAtMs?: number;
+  /** Solo salientes: pending hasta que el socket acepta, failed si el envío
+   *  lanzó — la UI ofrece reintentar. */
+  sendState?: 'pending' | 'sent' | 'failed';
 }
 
 /** Button color hint (paridad con Telegram / GTK). */

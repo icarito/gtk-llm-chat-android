@@ -116,6 +116,9 @@ function bodyWithOob(stanza: Element, body: string): string {
 const QUICK_RESPONSE_NS = 'urn:xmpp:quick-response:0';
 const LEGACY_QUICK_RESPONSE_NS = 'urn:xmpp:tmp:quick-response';
 const MESSAGE_CORRECT_NS = 'urn:xmpp:message-correct:0';
+// XEP-0085: estados de chat ("escribiendo…"). El gateway los emite mientras
+// el agente trabaja; nosotros los emitimos al teclear.
+const CHAT_STATES_NS = 'http://jabber.org/protocol/chatstates';
 const DISCO_ITEMS_NS = 'http://jabber.org/protocol/disco#items';
 const COMMAND_NS = 'http://jabber.org/protocol/commands';
 const PUBSUB_EVENT_NS = 'http://jabber.org/protocol/pubsub#event';
@@ -158,6 +161,7 @@ const CAPS_FEATURES = [
   // Avatares XEP-0084: sin el +notify del nodo de metadata el servidor no nos
   // avisa cuando un contacto cambia su foto.
   `${AVATAR_METADATA_NODE}+notify`,
+  CHAT_STATES_NS,
 ];
 const pushLog = globalThis.console;
 
@@ -378,6 +382,8 @@ let uploadHostCache: string | null | undefined = undefined;
 let seenIds = new Set<string>();
 let pingTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectPromise: Promise<void> | null = null;
+/** connect() en curso: los llamadores concurrentes esperan al mismo intento. */
+let connectInFlight: Promise<void> | null = null;
 /** Reintento propio tras una caída detectada por nosotros (ver scheduleReconnect). */
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingActionExpiryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -405,6 +411,33 @@ function nextAvatarIqId(kind: 'meta' | 'data'): string {
 function notifyAvatars(jid: string) {
   const uri = avatarUris.get(jid) ?? null;
   for (const listener of avatarListeners) listener(jid, uri);
+}
+
+/**
+ * XEP-0085: quién está "escribiendo…" ahora mismo. Con timeout de seguridad:
+ * si el contacto muere sin mandar <paused/>, el indicador no queda pegado.
+ */
+const typingJids = new Set<string>();
+const typingListeners = new Set<(jid: string, typing: boolean) => void>();
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const TYPING_TIMEOUT_MS = 15000;
+
+function setTyping(jid: string, typing: boolean) {
+  const timer = typingTimers.get(jid);
+  if (timer) {
+    clearTimeout(timer);
+    typingTimers.delete(jid);
+  }
+  const had = typingJids.has(jid);
+  if (typing) {
+    typingJids.add(jid);
+    typingTimers.set(jid, setTimeout(() => setTyping(jid, false), TYPING_TIMEOUT_MS));
+  } else {
+    typingJids.delete(jid);
+  }
+  if (had !== typing) {
+    for (const listener of typingListeners) listener(jid, typing);
+  }
 }
 
 /**
@@ -557,6 +590,22 @@ function expireMatchingQuickResponses(conversationJid: string, body: string, msg
   if (changed) notifyPendingActions();
 }
 
+/** Marca un mensaje saliente como enviado/fallido y notifica a la UI. */
+function updateOutboundSendState(
+  to: string,
+  id: string,
+  sendState: 'pending' | 'sent' | 'failed',
+) {
+  const existing = messagesMap.get(to);
+  if (!existing) return;
+  const idx = existing.findIndex((m) => m.id === id && m.direction === 'out');
+  if (idx < 0) return;
+  const updated = [...existing];
+  updated[idx] = { ...updated[idx], sendState };
+  messagesMap.set(to, updated);
+  notifyMessages();
+}
+
 function addMessageToMap(msg: XmppMessage) {
   // Conversations are keyed by the OTHER party, whichever way the message went.
   const key = msg.direction === 'out' ? msg.to : msg.from;
@@ -656,6 +705,39 @@ function applyIncomingCorrection(conversationJid: string, replaceId: string, bod
   removePendingActionsByMessage(conversationJid, replaceId);
   XmppHistory.applyCorrectionByStanzaId(conversationJid, replaceId, body).catch(() => {});
   dismissNotificationForJid(conversationJid).catch(() => {});
+  // La burbuja visible también: sin esto la corrección solo llega al SQLite y
+  // el streaming del gateway (burbuja única XEP-0308 que crece) no se ve hasta
+  // recargar el historial. `correctedAtMs` alimenta la afordancia "en curso".
+  const existing = messagesMap.get(conversationJid);
+  if (existing) {
+    const idx = existing.findIndex((m) => m.id === replaceId);
+    if (idx >= 0) {
+      const updated = [...existing];
+      updated[idx] = {
+        ...updated[idx],
+        body,
+        quickResponses: undefined,
+        commands: undefined,
+        correctedAtMs: Date.now(),
+      };
+      messagesMap.set(conversationJid, updated);
+      notifyMessages();
+      return;
+    }
+  }
+  // Corrección a un mensaje que no tenemos en memoria (p. ej. la app se abrió
+  // a mitad de turno): mostrarla como mensaje nuevo antes que perder contenido.
+  addMessageToMap({
+    id: replaceId,
+    from: conversationJid,
+    to: accountConfig?.jid ?? '',
+    type: 'chat',
+    body,
+    timestamp: new Date().toISOString(),
+    direction: 'in',
+    isGroup: isGroupJidEx(conversationJid, undefined),
+    correctedAtMs: Date.now(),
+  });
 }
 
 function noteText(command: Element): string {
@@ -1139,6 +1221,51 @@ export const XmppService = {
     return () => pendingActionListeners.delete(fn);
   },
 
+  /** XEP-0085: ¿está este contacto "escribiendo…" ahora? */
+  isTyping(bareJidStr: string): boolean {
+    return typingJids.has(bareJidStr);
+  },
+
+  onTypingChange(fn: (jid: string, typing: boolean) => void) {
+    typingListeners.add(fn);
+    return () => typingListeners.delete(fn);
+  },
+
+  /**
+   * XEP-0085 saliente. Best-effort: si no hay conexión, silencio — un estado
+   * de chat jamás debe romper nada.
+   */
+  sendChatState(to: string, state: 'composing' | 'paused' | 'active'): void {
+    if (!xmppClient || connectionState !== 'online') return;
+    xmppClient
+      .send(xml('message', { type: 'chat', to }, xml(state, { xmlns: CHAT_STATES_NS })))
+      .catch(() => {});
+  },
+
+  /** Reintenta un mensaje saliente marcado como fallido. */
+  async retryMessage(to: string, id: string): Promise<void> {
+    if (!xmppClient || connectionState !== 'online') {
+      throw new Error('XMPP not connected');
+    }
+    const msg = (messagesMap.get(to) ?? [])
+      .find((m) => m.id === id && m.direction === 'out' && m.sendState === 'failed');
+    if (!msg) return;
+    updateOutboundSendState(to, id, 'pending');
+    try {
+      await xmppClient.send(xml(
+        'message',
+        { type: msg.type, to, id },
+        xml('body', {}, msg.body),
+        xml('active', { xmlns: CHAT_STATES_NS }),
+      ));
+      updateOutboundSendState(to, id, 'sent');
+      XmppHistory.recordMessage(to, msg.body, 'out', msg.timestamp, null).catch(() => {});
+    } catch (error) {
+      updateOutboundSendState(to, id, 'failed');
+      throw error;
+    }
+  },
+
   getAgentTelemetry(bareJid: string): Record<string, unknown> | undefined {
     return agentTelemetry.get(bareJid);
   },
@@ -1240,6 +1367,18 @@ export const XmppService = {
   },
 
   async connect(config: XmppAccountConfig) {
+    // Exclusividad: al volver del background pueden pedir conexión a la vez el
+    // AppState handler (reconnectIfNeeded) y la pantalla de chat. Sin este
+    // guard, cada connect() tumba el cliente del otro a mitad de handshake y
+    // el estado oscila connecting→offline→connecting sin converger.
+    if (connectInFlight) return connectInFlight;
+    connectInFlight = this.connectExclusive(config).finally(() => {
+      connectInFlight = null;
+    });
+    return connectInFlight;
+  },
+
+  async connectExclusive(config: XmppAccountConfig) {
     if (xmppClient) {
       await this.disconnect();
     }
@@ -1297,7 +1436,8 @@ export const XmppService = {
     // SUBIDA A MANO al añadir el +notify de avatares: el servidor cachea por
     // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
     // los features nuevos no se anunciarían y no llegarían los avatares.
-    const capsHash = 'v3-telemetry-avatar';
+    // v4: + chatstates (XEP-0085).
+    const capsHash = 'v4-telemetry-avatar-chatstates';
     const capsNode = CAPS_NODE;
 
     xmppClient.on('online', () => {
@@ -1599,6 +1739,15 @@ export const XmppService = {
       const body = bodyWithOob(stanza, stanza.getChildText('body') || '');
       const from = stanza.attrs.from as string | undefined;
       if (!from) return;
+
+      // XEP-0085: los estados viajan en mensajes sin cuerpo (o junto a uno).
+      // Un cuerpo real implica que el contacto dejó de "escribir".
+      const composing = Boolean(stanza.getChild('composing', CHAT_STATES_NS));
+      const stoppedTyping = ['active', 'paused', 'inactive', 'gone']
+        .some((state) => Boolean(stanza.getChild(state, CHAT_STATES_NS)));
+      if (composing || stoppedTyping || body) {
+        setTyping(bareJid(from), composing && !body);
+      }
       if (!body) return;
 
       const platformId = bareJid(from);
@@ -1741,8 +1890,21 @@ export const XmppService = {
       timestamp,
       direction: 'out',
       isGroup: type === 'groupchat',
+      sendState: 'pending',
     });
-    await xmppClient.send(xml('message', { type, to, id }, xml('body', {}, body)));
+    try {
+      await xmppClient.send(xml(
+        'message',
+        { type, to, id },
+        xml('body', {}, body),
+        // XEP-0085: un mensaje con cuerpo implica estado active.
+        xml('active', { xmlns: CHAT_STATES_NS }),
+      ));
+      updateOutboundSendState(to, id, 'sent');
+    } catch (error) {
+      updateOutboundSendState(to, id, 'failed');
+      throw error;
+    }
     // Cached with no mam_id; the archive copy will be matched onto this row.
     XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
     return id;

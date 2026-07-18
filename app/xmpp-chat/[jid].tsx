@@ -32,6 +32,9 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
+/** Ventana tras la última corrección XEP-0308 en la que la burbuja se
+ *  considera "en streaming" (el gateway edita cada pocos segundos). */
+const STREAMING_WINDOW_MS = 6000;
 
 const URL_RE = /https?:\/\/[^\s<>"']+/g;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(\?|#|$)/i;
@@ -619,22 +622,88 @@ export default function XmppChatScreen() {
     || Boolean(agentStatus.tool);
   const awaitingReply = pendingCount > 0 && !agentWorking;
 
+  // XEP-0085: "escribiendo…" del contacto.
+  const [peerTyping, setPeerTyping] = useState(() => XmppService.isTyping(decodedJid));
+  useEffect(() => {
+    setPeerTyping(XmppService.isTyping(decodedJid));
+    const unsub = XmppService.onTypingChange((jid, typing) => {
+      if (jid === decodedJid) setPeerTyping(typing);
+    });
+    return () => { unsub(); };
+  }, [decodedJid]);
+
+  // Avatar del contacto (XEP-0084, cacheado por el servicio) para el header.
+  const [peerAvatar, setPeerAvatar] = useState<string | null>(
+    () => XmppService.getAvatarUri(decodedJid),
+  );
+  useEffect(() => {
+    setPeerAvatar(XmppService.getAvatarUri(decodedJid));
+    XmppService.fetchAvatar(decodedJid).catch(() => {});
+    const unsub = XmppService.onAvatarChange((jid, uri) => {
+      if (jid === decodedJid) setPeerAvatar(uri);
+    });
+    return () => { unsub(); };
+  }, [decodedJid]);
+
+  // Afordancia de streaming: mientras una burbuja siga recibiendo
+  // correcciones XEP-0308 (ventana de 6s), se pinta "en curso". El tick solo
+  // corre mientras haya streaming activo, para no re-renderizar en vano.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const streamingActive = useMemo(
+    () => sortedMsgs.some(
+      (m) => m.correctedAtMs !== undefined && nowTick - m.correctedAtMs < STREAMING_WINDOW_MS,
+    ),
+    [sortedMsgs, nowTick],
+  );
+  useEffect(() => {
+    if (!streamingActive) return;
+    const timer = setInterval(() => setNowTick(Date.now()), 2000);
+    return () => clearInterval(timer);
+  }, [streamingActive]);
+
   // Persist last visited chat
   useEffect(() => {
     AsyncStorage.setItem(LAST_CHAT_KEY, decodedJid).catch(() => {});
   }, [decodedJid]);
 
-  // Auto-connect without params
+  // Auto-connect al entrar sin conexión. UN intento por caída: si falla, el
+  // backoff del servicio (scheduleReconnect) es quien reintenta — relanzar
+  // desde aquí en cada cambio de estado creaba un bucle connecting→offline al
+  // volver desde una notificación, peleando con el reconnect del AppState.
+  const autoConnectAttemptedRef = useRef(false);
   useEffect(() => {
-    if (isConfigured && (state === 'disconnected' || state === 'offline')) {
-      connect('', '', '', '').catch(() => {});
+    if (!isConfigured) return;
+    if (state !== 'disconnected' && state !== 'offline') {
+      autoConnectAttemptedRef.current = false;
+      return;
     }
+    if (autoConnectAttemptedRef.current) return;
+    autoConnectAttemptedRef.current = true;
+    connect('', '', '', '').catch(() => {});
   }, [isConfigured, state, connect]);
+
+  // XEP-0085 saliente: composing al teclear (re-emitido cada 8s como máximo),
+  // paused al vaciar el campo. El <active/> del envío lo pone el servicio.
+  const lastComposingSentRef = useRef(0);
+  const handleInputChange = useCallback((text: string) => {
+    setInput(text);
+    const now = Date.now();
+    if (text.trim()) {
+      if (now - lastComposingSentRef.current > 8000) {
+        lastComposingSentRef.current = now;
+        XmppService.sendChatState(decodedJid, 'composing');
+      }
+    } else if (lastComposingSentRef.current > 0) {
+      lastComposingSentRef.current = 0;
+      XmppService.sendChatState(decodedJid, 'paused');
+    }
+  }, [decodedJid]);
 
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed) return;
     setInput('');
+    lastComposingSentRef.current = 0;
     // sendMessage publishes the outgoing message to the service's map and
     // caches it — no local copy needed here.
     try {
@@ -760,11 +829,22 @@ export default function XmppChatScreen() {
     }
   }, []);
 
+  const handleRetry = useCallback((id: string) => {
+    XmppService.retryMessage(decodedJid, id).catch(() => {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Sin conexión — no se pudo reenviar', ToastAndroid.SHORT);
+      }
+    });
+  }, [decodedJid]);
+
   const renderMessage = useCallback(
     ({ item }: { item: XmppMessage }) => {
       const isMine = item.direction === 'out';
       const attachmentUrl = item.oobUrl || firstImageUrl(item.body);
       const visibleBody = contentWithoutAttachmentUrl(item.body, attachmentUrl);
+      const isStreaming = !isMine
+        && item.correctedAtMs !== undefined
+        && Date.now() - item.correctedAtMs < STREAMING_WINDOW_MS;
 
       return (
         <View style={[styles.messageRow,
@@ -776,7 +856,11 @@ export default function XmppChatScreen() {
               confiable de copiar. */}
           <Pressable
             onLongPress={() => copyMessage(item.body)}
-            style={[styles.bubble, isMine ? styles.bubbleRight : styles.bubbleLeft]}
+            style={[
+              styles.bubble,
+              isMine ? styles.bubbleRight : styles.bubbleLeft,
+              isStreaming && styles.bubbleStreaming,
+            ]}
           >
             {!isMine && item.type === 'groupchat' && (
               <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
@@ -808,21 +892,46 @@ export default function XmppChatScreen() {
             {visibleBody ? (
               <MessageBody body={visibleBody} isMine={isMine} />
             ) : null}
-            <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
-              {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </Text>
+            <View style={styles.bubbleFooter}>
+              {isStreaming && (
+                <ActivityIndicator size={12} color={Colors.primary} />
+              )}
+              <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
+                {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {isMine && item.sendState === 'sent' ? ' ✓' : ''}
+                {isMine && item.sendState === 'pending' ? ' …' : ''}
+              </Text>
+            </View>
+            {isMine && item.sendState === 'failed' && (
+              <TouchableOpacity onPress={() => handleRetry(item.id)}>
+                <Text style={styles.sendFailedText}>⚠ No enviado — tocar para reintentar</Text>
+              </TouchableOpacity>
+            )}
           </Pressable>
         </View>
       );
     },
-    [copyMessage],
+    [copyMessage, handleRetry, nowTick],
   );
 
   return (
     <>
       <Stack.Screen
         options={{
-          headerTitle: displayName(decodedJid, contact?.name),
+          headerTitle: () => (
+            <View style={styles.headerTitleRow}>
+              {peerAvatar ? (
+                <Image source={{ uri: peerAvatar }} style={styles.headerAvatar} />
+              ) : (
+                <View style={[styles.headerAvatar, styles.headerAvatarFallback]}>
+                  <Ionicons name="person" size={14} color={Colors.textDim} />
+                </View>
+              )}
+              <Text style={styles.headerTitleText} numberOfLines={1}>
+                {displayName(decodedJid, contact?.name)}
+              </Text>
+            </View>
+          ),
           headerStyle: { backgroundColor: Colors.surface },
           headerTintColor: Colors.text,
           headerRight: () => (
@@ -997,6 +1106,13 @@ export default function XmppChatScreen() {
           }
         />
 
+        {peerTyping && !streamingActive && (
+          <View style={styles.typingRow}>
+            <ActivityIndicator size={12} color={Colors.textDim} />
+            <Text style={styles.typingText}>escribiendo…</Text>
+          </View>
+        )}
+
         {(rehydrating || syncing) && (
           <View style={styles.hydrationBar}>
             <ActivityIndicator size="small" color={Colors.primary} />
@@ -1151,7 +1267,7 @@ export default function XmppChatScreen() {
           <TextInput
             style={styles.input}
             value={input}
-            onChangeText={setInput}
+            onChangeText={handleInputChange}
             placeholder="Escribe un mensaje..."
             placeholderTextColor={Colors.textDim}
             multiline
@@ -1233,6 +1349,30 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   timestamp: { fontSize: 11, color: Colors.textDim, marginTop: 4, alignSelf: 'flex-end' },
+  bubbleFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  bubbleStreaming: { borderWidth: 1, borderColor: Colors.primary },
+  sendFailedText: { fontSize: 12, color: Colors.error, marginTop: 4 },
+  typingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+  },
+  typingText: { fontSize: 12, color: Colors.textDim, fontStyle: 'italic' },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerTitleText: { fontSize: 17, fontWeight: '600', color: Colors.text, maxWidth: 200 },
+  headerAvatar: { width: 28, height: 28, borderRadius: 14 },
+  headerAvatarFallback: {
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   timestampMine: { color: 'rgba(255,255,255,0.7)' },
   agentToolbar: {
     backgroundColor: Colors.surface,
