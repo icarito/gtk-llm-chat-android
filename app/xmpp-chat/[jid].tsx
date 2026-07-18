@@ -38,6 +38,18 @@ const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(\?|#|$)/i;
 const TRAILING_URL_PUNCT_RE = /[.,;:!?)\]}]+$/;
 const CODE_FENCE_RE = /```([^\n`]*)\n?([\s\S]*?)```/g;
 
+function approvalTransportNotice(body: string): 'toast' | 'discard' | null {
+  const text = body.trim().replace(/\s+/g, ' ');
+  if (/^Command (submitted|expired)\.?$/i.test(text)) return 'toast';
+  if (/^✅\s*Approval\s+(allow-once|allow-always|deny)\s+submitted\b/i.test(text)) {
+    return 'toast';
+  }
+  if (/^✅\s*aprobado\s*[—-]/i.test(text)) return 'toast';
+  if (/^Recibido\s*[·.-]\s*preparando…?$/i.test(text)) return 'discard';
+  if (/^Turno completado sin respuesta visible\.?$/i.test(text)) return 'discard';
+  return null;
+}
+
 type MessagePart =
   | { type: 'text'; value: string }
   | { type: 'code'; value: string; language?: string };
@@ -412,9 +424,26 @@ export default function XmppChatScreen() {
 
   // Live messages arrive through the service's map; history comes from cache +
   // MAM. Both are deduped against each other on body+timestamp.
-  const liveMsgs = messages.get(decodedJid) || [];
-  const sortedMsgs = mergeMessages(history, liveMsgs);
+  const liveMsgs = useMemo(
+    () => messages.get(decodedJid) || [],
+    [decodedJid, messages],
+  );
+  const sortedMsgs = mergeMessages(history, liveMsgs)
+    .filter((message) => approvalTransportNotice(message.body) === null);
   const msgCount = sortedMsgs.length;
+  const toastedTransportIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const message of liveMsgs) {
+      if (message.direction !== 'in') continue;
+      if (approvalTransportNotice(message.body) !== 'toast') continue;
+      if (toastedTransportIds.current.has(message.id)) continue;
+      toastedTransportIds.current.add(message.id);
+      if (Platform.OS === 'android') {
+        ToastAndroid.show(message.body.trim(), ToastAndroid.SHORT);
+      }
+    }
+  }, [liveMsgs]);
   const chatPendingActions = useMemo(
     () => pendingActions
       .filter((action) => action.conversationJid === decodedJid)
@@ -671,9 +700,13 @@ export default function XmppChatScreen() {
     setControlNotice(null);
     try {
       const result = await XmppService.runAdhocCommand(command.jid || decodedJid, command.node);
-      setControlNotice(result || `Comando ejecutado: ${command.name}`);
+      const notice = result || `Comando ejecutado: ${command.name}`;
+      if (Platform.OS === 'android') ToastAndroid.show(notice, ToastAndroid.SHORT);
+      else setControlNotice(notice);
     } catch (err) {
-      setControlNotice(String(err));
+      const notice = String(err);
+      if (Platform.OS === 'android') ToastAndroid.show(notice, ToastAndroid.SHORT);
+      else setControlNotice(notice);
     } finally {
       setCommandBusyNode(null);
     }
