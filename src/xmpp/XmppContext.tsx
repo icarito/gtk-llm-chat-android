@@ -52,6 +52,13 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!account || loading) return undefined;
 
+    // Cold start must not depend on a screen calling connect() or on a future
+    // background→active transition. The singleton deduplicates concurrent
+    // recovery attempts and keeps ownership outside React components.
+    XmppService.reconnectIfNeeded(account).catch(() => {
+      // Structured state is surfaced through the service listener.
+    });
+
     const sub = AppState.addEventListener('change', (nextState) => {
       const wasSuspended = appState.current === 'background' || appState.current === 'inactive';
       appState.current = nextState;
