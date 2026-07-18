@@ -10,7 +10,9 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { XmppProvider } from '@/xmpp/XmppContext';
 import { setupNotifications, setAppForeground } from '@/xmpp/notifications';
+import { shortcutJid } from '@/xmpp/shortcuts';
 import * as Notifications from 'expo-notifications';
+import * as QuickActions from 'expo-quick-actions';
 import { Ionicons } from '@expo/vector-icons';
 import * as SplashScreen from 'expo-splash-screen';
 
@@ -29,6 +31,14 @@ function routeFromNotification(notification: Notifications.Notification): void {
   }
   if (!jid) return;
 
+  router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(jid) } } as never);
+}
+
+// Tap en un shortcut de launcher (long-press del icono → contacto). Mismo
+// contrato que las notificaciones: navegar por jid re-encodeado.
+function routeFromShortcut(action: QuickActions.Action): void {
+  const jid = shortcutJid(action);
+  if (!jid) return;
   router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(jid) } } as never);
 }
 
@@ -55,6 +65,10 @@ export default function RootLayout() {
       routeFromNotification(response.notification);
     });
 
+    // Shortcut que ARRANCÓ la app (cold start) + taps con la app ya viva.
+    if (QuickActions.initial) routeFromShortcut(QuickActions.initial);
+    const shortcutSub = QuickActions.addListener(routeFromShortcut);
+
     const sub = AppState.addEventListener('change', (state) => {
       setAppForeground(state === 'active');
     });
@@ -63,6 +77,7 @@ export default function RootLayout() {
       mounted = false;
       sub.remove();
       responseSub.remove();
+      shortcutSub.remove();
     };
   }, []);
 

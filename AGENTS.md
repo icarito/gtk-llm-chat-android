@@ -19,6 +19,7 @@ src/
     XmppContext.tsx        → Puente React del servicio
     XmppHistory.ts         → Caché local (expo-sqlite) + MAM
     notifications.ts       → Notificaciones locales + push XEP-0357
+    shortcuts.ts           → Shortcuts de launcher por contacto (expo-quick-actions)
     presence.ts            → Color/etiqueta de presencia y nombre legible
     ForegroundService.ts   → Puente al servicio nativo
     xep-0004.ts            → Formularios de datos
@@ -62,6 +63,14 @@ android/
 - **Android 12+ prohíbe arrancar un foreground service desde background.** Sólo
   se inicia con la app en primer plano; si no, cada intento es denegado y
   alimenta un bucle.
+- **La moduleResolution "node" del tsconfig base no lee `exports` de
+  package.json.** Paquetes que sólo publican tipos por `exports` (p.ej.
+  expo-quick-actions) necesitan un shim en `src/types/<paquete>.d.ts`; Metro
+  sí los resuelve en runtime.
+- **La selección de texto en burbujas se desmonta con cada re-render** de la
+  FlatList (presencia/telemetría llegan todo el tiempo). El copiado confiable
+  es el long-press de la burbuja (Clipboard + toast); `selectable` queda como
+  extra para cuando sobrevive.
 
 ## Verificar
 

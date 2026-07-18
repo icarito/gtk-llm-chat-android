@@ -169,9 +169,11 @@ function isReplay(msg: XmppMessage): boolean {
 
 // Show notification for incoming XMPP message
 export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
-  if (isForeground) return; // Don't notify when app is open
-  // Tampoco notificar el chat que el usuario está mirando.
-  if (activeChatJid && bareJid(msg.from) === activeChatJid) return;
+  // Con la app abierta sólo se calla el chat que el usuario está MIRANDO:
+  // un mensaje de cualquier otro JID sí notifica (banner), como cualquier
+  // app de mensajería. El corte anterior por "app en foreground" silenciaba
+  // todas las demás conversaciones mientras hubiera un chat abierto.
+  if (isForeground && activeChatJid && bareJid(msg.from) === activeChatJid) return;
   // Ni historial reenviado tras una reconexión.
   if (isReplay(msg)) return;
   if (msg.id) {

@@ -24,6 +24,7 @@ import {
   updateContactNameCache,
 } from '@/xmpp/notifications';
 import { PushStatus } from '@/xmpp/pushStatus';
+import { updateContactShortcuts } from '@/xmpp/shortcuts';
 import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
@@ -392,6 +393,14 @@ const agentTelemetry = new Map<string, Record<string, unknown>>();
 /** bare_jid -> file:// del avatar cacheado (XEP-0084). */
 const avatarUris = new Map<string, string>();
 const avatarListeners = new Set<(jid: string, uri: string | null) => void>();
+/** Latest advertised avatar hash per contact, used to ignore stale IQ replies. */
+const avatarHashes = new Map<string, string>();
+let avatarIqSequence = 0;
+
+function nextAvatarIqId(kind: 'meta' | 'data'): string {
+  avatarIqSequence = (avatarIqSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `avatar-${kind}-${Date.now().toString(36)}-${avatarIqSequence.toString(36)}`;
+}
 
 function notifyAvatars(jid: string) {
   const uri = avatarUris.get(jid) ?? null;
@@ -407,10 +416,12 @@ function notifyAvatars(jid: string) {
  */
 async function fetchAvatarData(bare: string, sha: string): Promise<void> {
   try {
+    avatarHashes.set(bare, sha);
     const dir = `${FileSystem.cacheDirectory}avatars/`;
     const path = `${dir}${sha}.img`;
     const existing = await FileSystem.getInfoAsync(path);
     if (existing.exists) {
+      if (avatarHashes.get(bare) !== sha) return;
       avatarUris.set(bare, path);
       notifyAvatars(bare);
       return;
@@ -418,7 +429,7 @@ async function fetchAvatarData(bare: string, sha: string): Promise<void> {
     if (!xmppClient || connectionState !== 'online') return;
 
     const result = await xmppClient.iqCaller.request(
-      xml('iq', { type: 'get', to: bare, id: `avatar-${Date.now()}` },
+      xml('iq', { type: 'get', to: bare, id: nextAvatarIqId('data') },
         xml('pubsub', { xmlns: PUBSUB_NS },
           xml('items', { node: AVATAR_DATA_NODE }, xml('item', { id: sha })))),
       15000,
@@ -430,11 +441,13 @@ async function fetchAvatarData(bare: string, sha: string): Promise<void> {
       ?.map((item: Element) => item.getChild('data', AVATAR_DATA_NODE)?.text())
       .find((text?: string) => Boolean(text));
     if (!base64) return;
+    if (avatarHashes.get(bare) !== sha) return;
 
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
     await FileSystem.writeAsStringAsync(path, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
+    if (avatarHashes.get(bare) !== sha) return;
     avatarUris.set(bare, path);
     notifyAvatars(bare);
   } catch {
@@ -472,6 +485,9 @@ function notifyState() {
 function notifyContacts() {
   const arr = [...contactsMap.values()];
   updateContactNameCache(arr);
+  // Shortcuts de launcher por contacto; dedupe interno, así que llamarlo en
+  // cada notificación de roster es barato.
+  void updateContactShortcuts(arr);
   contactListeners.forEach((fn) => fn(arr));
 }
 
@@ -1149,7 +1165,7 @@ export const XmppService = {
     if (!xmppClient || connectionState !== 'online') return;
     try {
       const result = await xmppClient.iqCaller.request(
-        xml('iq', { type: 'get', to: bareJid, id: `avatar-meta-${Date.now()}` },
+        xml('iq', { type: 'get', to: bareJid, id: nextAvatarIqId('meta') },
           xml('pubsub', { xmlns: PUBSUB_NS },
             xml('items', { node: AVATAR_METADATA_NODE, max_items: '1' }))),
         15000,
@@ -1477,6 +1493,7 @@ export const XmppService = {
           const info = item?.getChild('metadata', AVATAR_METADATA_NODE)?.getChild('info');
           const sha = info?.attrs.id as string | undefined;
           if (!sha) {
+            avatarHashes.delete(bare);
             avatarUris.delete(bare);
             notifyAvatars(bare);
             return;

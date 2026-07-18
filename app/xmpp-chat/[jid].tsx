@@ -16,12 +16,13 @@ import {
   Linking,
   Alert,
   Clipboard,
+  ToastAndroid,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import { useLocalSearchParams, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
-import { setActiveChatJid } from '@/xmpp/notifications';
+import { setActiveChatJid, dismissNotificationForJid } from '@/xmpp/notifications';
 import { displayName, presenceColor } from '@/xmpp/presence';
 import { pendingOutboundCount } from '@/xmpp/pendingCount';
 import { formatAgentActivity, parseAgentStatus } from '@/xmpp/agentStatus';
@@ -288,11 +289,24 @@ export default function XmppChatScreen() {
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
   const hasCachedHistoryRef = useRef(false);
 
-  // Suppress local notifications while this chat is open
+  // Suppress local notifications while this chat is open, and clear the ones
+  // already in the tray for this conversation (they are read now).
   useEffect(() => {
     setActiveChatJid(decodedJid);
+    dismissNotificationForJid(decodedJid).catch(() => {});
     return () => setActiveChatJid(null);
   }, [decodedJid]);
+
+  // Bump que fuerza refetch de telemetría y comandos: al volver a enfocar la
+  // pantalla y cuando el agente pasa de offline a conectado (reinicio del
+  // gateway). Sin esto, estado/estadísticas/comandos quedaban con lo que
+  // hubiera al montar — la "inconsistencia" clásica al volver a un chat.
+  const [refreshTick, setRefreshTick] = useState(0);
+  useFocusEffect(
+    useCallback(() => {
+      setRefreshTick((tick) => tick + 1);
+    }, []),
+  );
 
   // Paint the cache immediately on open, then catch up with the archive.
   useEffect(() => {
@@ -441,6 +455,20 @@ export default function XmppChatScreen() {
   );
   const agentStatus = useMemo(() => parseAgentStatus(contact?.status), [contact?.status]);
 
+  // El agente volvió a conectarse (reinicio del gateway): su set de comandos y
+  // su telemetría pueden haber cambiado. Sólo dispara en la transición
+  // offline→conectado, no en cada cambio de presencia (available↔dnd es ruido
+  // constante mientras trabaja).
+  const prevPresenceRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevPresenceRef.current;
+    const current = contact?.presence;
+    prevPresenceRef.current = current;
+    if (prev === 'offline' && current && current !== 'offline') {
+      setRefreshTick((tick) => tick + 1);
+    }
+  }, [contact?.presence]);
+
   // Telemetría por PEP (contexto, modelo, coste). Nos suscribimos a los eventos,
   // y además PEDIMOS el valor actual al abrir: los eventos sólo llegan cuando el
   // agente publica algo nuevo, así que uno que lleva rato quieto no emitiría nada
@@ -489,7 +517,7 @@ export default function XmppChatScreen() {
       unsub();
       if (settleTimer) clearTimeout(settleTimer);
     };
-  }, [decodedJid, state]);
+  }, [decodedJid, state, refreshTick]);
 
   const contextFraction = useMemo(() => {
     const used = telemetry.context_used as number | undefined;
@@ -657,19 +685,45 @@ export default function XmppChatScreen() {
       return;
     }
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setLoadingCommands(true);
-    XmppService.listAdhocCommands(decodedJid)
-      .then((commands) => {
-        if (!cancelled) setAvailableCommands(commands);
-      })
-      .catch(() => {
-        if (!cancelled) setAvailableCommands([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingCommands(false);
-      });
-    return () => { cancelled = true; };
-  }, [decodedJid, state]);
+    const fetchCommands = (attempt: number) => {
+      XmppService.listAdhocCommands(decodedJid)
+        .then((commands) => {
+          if (cancelled) return;
+          setAvailableCommands(commands);
+          // Un disco vacío recién conectados suele ser el gateway todavía
+          // arrancando, no "este agente no tiene comandos": un único reintento
+          // corto cubre esa ventana sin martillar el servidor.
+          if (commands.length === 0 && attempt === 0) {
+            retryTimer = setTimeout(() => fetchCommands(1), 4000);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAvailableCommands([]);
+          if (attempt === 0) {
+            retryTimer = setTimeout(() => fetchCommands(1), 4000);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingCommands(false);
+        });
+    };
+    fetchCommands(0);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [decodedJid, state, refreshTick]);
+
+  const copyMessage = useCallback((body: string) => {
+    if (!body.trim()) return;
+    Clipboard.setString(body);
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('Mensaje copiado', ToastAndroid.SHORT);
+    }
+  }, []);
 
   const renderMessage = useCallback(
     ({ item }: { item: XmppMessage }) => {
@@ -680,7 +734,15 @@ export default function XmppChatScreen() {
       return (
         <View style={[styles.messageRow,
           isMine ? styles.messageRowRight : styles.messageRowLeft]}>
-          <View style={[styles.bubble, isMine ? styles.bubbleRight : styles.bubbleLeft]}>
+          {/* Long-press en cualquier parte de la burbuja copia el mensaje.
+              El `selectable` de los Text sigue ahí, pero en la práctica la
+              selección se desmonta con cada re-render de la lista (llegan
+              presencia/telemetría todo el tiempo), así que esta es la vía
+              confiable de copiar. */}
+          <Pressable
+            onLongPress={() => copyMessage(item.body)}
+            style={[styles.bubble, isMine ? styles.bubbleRight : styles.bubbleLeft]}
+          >
             {!isMine && item.type === 'groupchat' && (
               <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
             )}
@@ -714,11 +776,11 @@ export default function XmppChatScreen() {
             <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
               {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </Text>
-          </View>
+          </Pressable>
         </View>
       );
     },
-    [],
+    [copyMessage],
   );
 
   return (
