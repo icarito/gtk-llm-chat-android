@@ -80,7 +80,15 @@ npm start      # Metro; con adb reverse tcp:8081 tcp:8081 por USB
 make reinstall-release   # sólo si tocas código nativo, permisos o Firebase
 ```
 
+## Flujo SDD
+
+Los cambios nuevos nacen en `openspec/changes/`. Usa `opsx:explore` para
+investigar, `opsx:propose` para crear el contrato, `opsx:apply` para ejecutar
+`tasks.md`, y `opsx:archive` al terminar la verificación y el review. Una tarea
+delegada no despliega ni hace push por cuenta propia.
+
 ## Referencias
 
 - Cliente de escritorio: `../gtk-llm-chat/`
-- Plugin XMPP de OpenClaw: `../claudio-w/extensions/xmpp/`
+- Plugin XMPP de OpenClaw: `../openclaw-xmpp/` (consumido también como
+  `../claudio-w/extensions/xmpp/`)
