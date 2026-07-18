@@ -9,6 +9,7 @@ import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { XmppProvider } from '@/xmpp/XmppContext';
+import { XmppService } from '@/xmpp/XmppService';
 import { setupNotifications, setAppForeground } from '@/xmpp/notifications';
 import { shortcutJid } from '@/xmpp/shortcuts';
 import * as Notifications from 'expo-notifications';
@@ -34,6 +35,21 @@ function routeFromNotification(notification: Notifications.Notification): void {
   router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(jid) } } as never);
 }
 
+function handleNotificationResponse(response: Notifications.NotificationResponse): void {
+  const data = response.notification.request.content.data as {
+    notificationActions?: string[];
+  } | null;
+  const match = /^approval-(\d+)$/.exec(response.actionIdentifier);
+  if (match) {
+    const actionId = data?.notificationActions?.[Number(match[1])];
+    if (actionId) {
+      XmppService.answerPendingAction(actionId).catch(() => {});
+      return;
+    }
+  }
+  routeFromNotification(response.notification);
+}
+
 // Tap en un shortcut de launcher (long-press del icono → contacto). Mismo
 // contrato que las notificaciones: navegar por jid re-encodeado.
 function routeFromShortcut(action: QuickActions.Action): void {
@@ -57,12 +73,12 @@ export default function RootLayout() {
     let mounted = true;
     Notifications.getLastNotificationResponseAsync()
       .then((response) => {
-        if (mounted && response?.notification) routeFromNotification(response.notification);
+        if (mounted && response?.notification) handleNotificationResponse(response);
       })
       .catch(() => {});
 
     const responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
-      routeFromNotification(response.notification);
+      handleNotificationResponse(response);
     });
 
     // Shortcut que ARRANCÓ la app (cold start) + taps con la app ya viva.

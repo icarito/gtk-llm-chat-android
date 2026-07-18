@@ -7,6 +7,7 @@ import {
   parseInlineCommands,
   parseQuickResponses,
 } from '@/xmpp/XmppService';
+import { isXmppNotificationNoise } from '@/xmpp/notifications';
 import type { XmppMessage } from '@/types/xmpp';
 
 describe('NanoClaw XMPP action metadata', () => {
@@ -125,5 +126,26 @@ describe('NanoClaw XMPP action metadata', () => {
     expect(classifyApprovalCommandResult('Command submitted.')).toBe('submitted');
     expect(classifyApprovalCommandResult('Command expired.')).toBe('expired');
     expect(classifyApprovalCommandResult('Failed to submit approval')).toBe('rejected');
+  });
+
+  it('notifies actionable approvals but not approval acknowledgements', () => {
+    const base = {
+      id: 'notification-1',
+      from: 'agent@example.org',
+      to: 'me@example.org',
+      type: 'chat',
+      timestamp: '2026-07-18T12:00:00.000Z',
+      direction: 'in',
+      isGroup: false,
+    } satisfies Omit<XmppMessage, 'body'>;
+    expect(isXmppNotificationNoise({
+      ...base,
+      body: '✅ Approval allow-once submitted for opaque.',
+    })).toBe(true);
+    expect(isXmppNotificationNoise({
+      ...base,
+      body: 'Approval required',
+      commands: [{ jid: 'agent@example.org', node: 'cmd:1', name: 'Allow Once' }],
+    })).toBe(false);
   });
 });

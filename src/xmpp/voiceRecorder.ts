@@ -90,6 +90,13 @@ export function useVoiceRecorder() {
     } catch {
       // ignore
     }
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid: false,
+      playThroughEarpieceAndroid: false,
+    }).catch(() => {});
     const duration = (Date.now() - startTimeRef.current) / 1000;
     const uri = rec.getURI();
     if (discard || !uri || duration < 3) {

@@ -283,55 +283,81 @@ function formatDuration(seconds: number): string {
 
 function AudioBubble({ url, duration }: { url: string; duration?: number | null }) {
   const [playing, setPlaying] = useState(false);
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [position, setPosition] = useState(0);
   const [soundDuration, setSoundDuration] = useState(duration ?? 0);
+  const soundRef = useRef<Audio.Sound | null>(null);
 
   useEffect(() => {
     return () => {
-      if (sound) {
-        sound.unloadAsync().catch(() => {});
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => {});
+        soundRef.current = null;
       }
     };
-  }, [sound]);
+  }, []);
 
   const handleToggle = useCallback(async () => {
-    if (error) return;
-    if (playing && sound) {
-      await sound.pauseAsync();
+    if (loading || error) return;
+
+    if (playing && soundRef.current) {
+      await soundRef.current.pauseAsync();
       setPlaying(false);
       return;
     }
-    if (sound) {
-      await sound.playAsync();
-      setPlaying(true);
+
+    if (soundRef.current) {
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false,
+        });
+        const status = await soundRef.current.playAsync();
+        setPlaying(status.isLoaded);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
       return;
     }
+
+    setLoading(true);
     try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: false,
+        playThroughEarpieceAndroid: false,
+      });
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: url },
-        { shouldPlay: true },
+        { shouldPlay: true, progressUpdateIntervalMillis: 200 },
         (status) => {
-          if (status.isLoaded) {
-            if (status.didJustFinish) {
-              setPlaying(false);
-              setPosition(0);
-            } else if (status.isPlaying) {
-              setPosition(status.positionMillis / 1000);
-              if (status.durationMillis && !duration) {
-                setSoundDuration(status.durationMillis / 1000);
-              }
+          if (!status.isLoaded) return;
+          if (status.didJustFinish) {
+            setPlaying(false);
+            setPosition(0);
+          } else if (status.isPlaying) {
+            setPosition(status.positionMillis / 1000);
+            if (status.durationMillis && !duration) {
+              setSoundDuration(status.durationMillis / 1000);
             }
           }
         },
       );
-      setSound(newSound);
+      soundRef.current = newSound;
       setPlaying(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+    } finally {
+      setLoading(false);
     }
-  }, [url, playing, sound, error]);
+  }, [url, playing, loading, error, duration]);
 
   const icon = error ? 'alert-circle' : playing ? 'pause' : 'play';
   const color = error ? Colors.error : Colors.primary;

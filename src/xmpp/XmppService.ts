@@ -21,6 +21,7 @@ import {
   dismissNotificationForJid,
   getStoredExpoPushToken,
   notifyXmppMessage,
+  setConnected,
   updateContactNameCache,
 } from '@/xmpp/notifications';
 import { PushStatus } from '@/xmpp/pushStatus';
@@ -680,7 +681,7 @@ function addMessageToMap(msg: XmppMessage) {
 
   if (msg.direction === 'out') {
     expireMatchingQuickResponses(key, msg.body, msg.timestamp);
-  } else {
+  } else if (!msg.correctedAtMs) {
     const contact = contactsMap.get(msg.from);
     notifyXmppMessage(msg, contact?.name);
   }
@@ -1527,6 +1528,7 @@ export const XmppService = {
       connectionState = 'online';
       notifyState();
       stopRetry();
+      setConnected();
       ForegroundService.start(config.jid).catch(() => {});
 
       // XEP-0280 Carbons — usar iqCaller para asegurar delivery y tener id

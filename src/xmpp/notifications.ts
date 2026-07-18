@@ -167,8 +167,35 @@ function isReplay(msg: XmppMessage): boolean {
   return Date.now() - ts > REPLAY_MAX_AGE_MS;
 }
 
+export function isXmppNotificationNoise(msg: XmppMessage): boolean {
+  if (msg.commands?.length || msg.quickResponses?.length) return false;
+  const text = String(msg.body ?? '').trim().replace(/\s+/g, ' ');
+  if (!text) return true;
+  return [
+    /^Recibido\s*[·.-]\s*preparando…?$/i,
+    /^Command (?:submitted|expired)\.?$/i,
+    /^✅\s*Approval\s+(?:allow-once|allow-always|deny)\s+submitted\b/i,
+    /^✅\s*aprobado\s*[—-]/i,
+    /^Usage:\s*\/approve\b/i,
+    /^\s*(?:⚠️?|✅|❌)?\s*(?:🔧|🛠️?|Tool(?:\s|:)|Using tool|Herramienta:|Exec failed:)/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+let lastConnectTime = 0;
+const CONNECT_GRACE_MS = 5000;
+
+export function setConnected() {
+  lastConnectTime = Date.now();
+}
+
 // Show notification for incoming XMPP message
 export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
+  if (isXmppNotificationNoise(msg)) return;
+  // Tras reconectar, el servidor vuelca carbons y mensajes pendientes que
+  // no son realmente nuevos. Una ventana de gracia evita la cascada de
+  // notificaciones "tienes un mensaje nuevo" al abrir la app o reinstalar.
+  if (lastConnectTime && Date.now() - lastConnectTime < CONNECT_GRACE_MS) return;
+
   // Con la app abierta sólo se calla el chat que el usuario está MIRANDO:
   // un mensaje de cualquier otro JID sí notifica (banner), como cualquier
   // app de mensajería. El corte anterior por "app en foreground" silenciaba
@@ -191,6 +218,29 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
   const title = displayName(msg.from, contactName || contactNameCache.get(bareJid(msg.from)))
     || 'Nuevo mensaje';
   const body = msg.body.length > 200 ? msg.body.slice(0, 197) + '...' : msg.body;
+  const sourceActions = (msg.commands?.length ? msg.commands : msg.quickResponses ?? []).slice(0, 3);
+  const notificationActions = sourceActions
+    .map((action, index) => ('node' in action
+      ? `${msg.id}:cmd:${index}:${action.node}`
+      : `${msg.id}:qr:${index}:${action.value}`));
+  const categoryIdentifier = notificationActions.length > 0
+    ? `xmpp_approval_${msg.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+    : undefined;
+  if (categoryIdentifier) {
+    await Notifications.setNotificationCategoryAsync(
+      categoryIdentifier,
+      sourceActions.map((action, index) => ({
+        identifier: `approval-${index}`,
+        buttonTitle: 'node' in action ? action.name : action.label,
+        options: {
+          opensAppToForeground: false,
+          ...((('style' in action) && action.style === 'danger')
+            ? { isDestructive: true }
+            : {}),
+        },
+      })),
+    );
+  }
 
   await Notifications.scheduleNotificationAsync({
     content: {
@@ -202,7 +252,11 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
         jid: msg.from,
         type: 'xmpp_message',
         url: notificationUrlForJid(msg.from),
+        ...(notificationActions.length > 0 ? { notificationActions } : {}),
       },
+      ...(categoryIdentifier
+        ? { categoryIdentifier }
+        : {}),
       priority: Notifications.AndroidNotificationPriority.HIGH,
     },
     trigger: null,
