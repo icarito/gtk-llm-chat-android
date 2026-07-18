@@ -20,7 +20,7 @@
       },
       "package": "org.fuentelibre.gtk_llm_chat",
       "versionCode": 2,
-      "permissions": []
+      "permissions": ["RECORD_AUDIO"]
     },
     "web": {
       "bundler": "metro",
@@ -48,7 +48,13 @@
           }
         }
       ],
-      "expo-quick-actions"
+      "expo-quick-actions",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow gtk-llm-chat to record voice messages."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

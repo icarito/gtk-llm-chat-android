@@ -43,6 +43,8 @@ export interface XmppMessage {
     sender: string;
   } | null;
   oobUrl?: string | null;
+  attachmentDuration?: number | null;
+  attachmentMimeType?: string | null;
   /** Epoch ms de la última corrección XEP-0308 aplicada — mientras sea
    *  reciente, la burbuja se pinta como "en curso" (streaming del gateway). */
   correctedAtMs?: number;

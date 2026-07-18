@@ -1193,6 +1193,8 @@ function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
     quickResponses: row.quick_responses,
     commands: row.commands,
     oobUrl: row.oob_url,
+    attachmentDuration: row.attachment_duration,
+    attachmentMimeType: row.attachment_mime_type,
   };
 }
 

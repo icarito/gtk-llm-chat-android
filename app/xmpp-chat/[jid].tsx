@@ -15,10 +15,10 @@ import {
   Image,
   Linking,
   Alert,
-  Clipboard,
   ToastAndroid,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
@@ -30,6 +30,9 @@ import { Colors } from '@/constants/theme';
 import type { XmppButtonStyle, XmppInlineCommand, XmppMessage, XmppPendingAction } from '@/types/xmpp';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useVoiceRecorder } from '@/xmpp/voiceRecorder';
+import { isAudioUrl } from '@/xmpp/audioUtils';
+import { Audio } from 'expo-av';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
 /** Ventana tras la última corrección XEP-0308 en la que la burbuja se
@@ -95,7 +98,7 @@ function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
                 </Text>
                 <TouchableOpacity
                   style={styles.codeCopyButton}
-                  onPress={() => Clipboard.setString(part.value)}
+                  onPress={() => Clipboard.setStringAsync(part.value)}
                   accessibilityRole="button"
                   accessibilityLabel="Copiar código"
                 >
@@ -272,6 +275,81 @@ function formatCost(value: number | string): string {
   }
 }
 
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function AudioBubble({ url, duration }: { url: string; duration?: number | null }) {
+  const [playing, setPlaying] = useState(false);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [position, setPosition] = useState(0);
+  const [soundDuration, setSoundDuration] = useState(duration ?? 0);
+
+  useEffect(() => {
+    return () => {
+      if (sound) {
+        sound.unloadAsync().catch(() => {});
+      }
+    };
+  }, [sound]);
+
+  const handleToggle = useCallback(async () => {
+    if (error) return;
+    if (playing && sound) {
+      await sound.pauseAsync();
+      setPlaying(false);
+      return;
+    }
+    if (sound) {
+      await sound.playAsync();
+      setPlaying(true);
+      return;
+    }
+    try {
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: url },
+        { shouldPlay: true },
+        (status) => {
+          if (status.isLoaded) {
+            if (status.didJustFinish) {
+              setPlaying(false);
+              setPosition(0);
+            } else if (status.isPlaying) {
+              setPosition(status.positionMillis / 1000);
+              if (status.durationMillis && !duration) {
+                setSoundDuration(status.durationMillis / 1000);
+              }
+            }
+          }
+        },
+      );
+      setSound(newSound);
+      setPlaying(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [url, playing, sound, error]);
+
+  const icon = error ? 'alert-circle' : playing ? 'pause' : 'play';
+  const color = error ? Colors.error : Colors.primary;
+  const durationLabel = soundDuration > 0
+    ? ` / ${formatDuration(soundDuration)}`
+    : '';
+  const posLabel = playing ? formatDuration(position) : '';
+
+  return (
+    <TouchableOpacity style={styles.audioBubble} onPress={handleToggle}>
+      <Ionicons name={icon} size={20} color={color} />
+      <Text style={[styles.audioLabel, error && { color: Colors.error }]}>
+        {error ? error : playing ? `${posLabel}${durationLabel}` : `Voz${durationLabel}`}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
 export default function XmppChatScreen() {
   const { jid } = useLocalSearchParams<{ jid: string }>();
   const decodedJid = decodeURIComponent(jid || '');
@@ -305,6 +383,8 @@ export default function XmppChatScreen() {
   const [telemetry, setTelemetry] = useState<Record<string, unknown>>({});
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
   const hasCachedHistoryRef = useRef(false);
+
+  const voice = useVoiceRecorder();
 
   // Suppress local notifications while this chat is open, and clear the ones
   // already in the tray for this conversation (they are read now).
@@ -744,6 +824,34 @@ export default function XmppChatScreen() {
     }
   }, [attaching, decodedJid]);
 
+  /** Graba voz → sube por XEP-0363 → envía el link como OOB. */
+  const handleVoicePressIn = useCallback(async () => {
+    await voice.startRecording();
+  }, [voice]);
+
+  const handleVoicePressOut = useCallback(async () => {
+    if (voice.recordingState === 'holding') {
+      const cap = await voice.stopRecording();
+      if (cap) {
+        voice.setUploading();
+        try {
+          const response = await fetch(cap.fileUri);
+          const blob = await response.blob();
+          await XmppService.sendFile(
+            decodedJid,
+            blob,
+            `voice_${Date.now()}.m4a`,
+            cap.mimeType,
+            'chat',
+          );
+          voice.reset();
+        } catch (e) {
+          voice.setFailed(e instanceof Error ? e.message : String(e));
+        }
+      }
+    }
+  }, [voice, decodedJid]);
+
   const handleAnswerAction = useCallback(async (action: XmppPendingAction) => {
     setActionBusy(action.id);
     try {
@@ -823,7 +931,7 @@ export default function XmppChatScreen() {
 
   const copyMessage = useCallback((body: string) => {
     if (!body.trim()) return;
-    Clipboard.setString(body);
+    Clipboard.setStringAsync(body);
     if (Platform.OS === 'android') {
       ToastAndroid.show('Mensaje copiado', ToastAndroid.SHORT);
     }
@@ -845,6 +953,9 @@ export default function XmppChatScreen() {
       const isStreaming = !isMine
         && item.correctedAtMs !== undefined
         && Date.now() - item.correctedAtMs < STREAMING_WINDOW_MS;
+      const audioUrl = isAudioUrl(attachmentUrl) ? attachmentUrl
+        : isAudioUrl(item.body) ? item.body.match(URL_RE)?.[0]?.replace(TRAILING_URL_PUNCT_RE, '') || null
+          : null;
 
       return (
         <View style={[styles.messageRow,
@@ -866,7 +977,9 @@ export default function XmppChatScreen() {
               <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
             )}
             {attachmentUrl ? (
-              isImageUrl(attachmentUrl) ? (
+              audioUrl ? (
+                <AudioBubble url={audioUrl} duration={item.attachmentDuration} />
+              ) : isImageUrl(attachmentUrl) ? (
                 // Adjunto de imagen: preview tocable que abre el original.
                 <TouchableOpacity onPress={() => Linking.openURL(attachmentUrl)}>
                   <Image
@@ -1268,6 +1381,18 @@ export default function XmppChatScreen() {
               <Ionicons name="attach" size={22} color={Colors.primary} />
             )}
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachBtn, state !== 'online' && styles.sendBtnDisabled]}
+            onPress={async () => {
+              const text = await Clipboard.getStringAsync();
+              if (text) {
+                setInput((prev) => prev + text);
+              }
+            }}
+            disabled={state !== 'online'}
+          >
+            <Ionicons name="clipboard-outline" size={20} color={Colors.primary} />
+          </TouchableOpacity>
           <TextInput
             style={styles.input}
             value={input}
@@ -1280,13 +1405,30 @@ export default function XmppChatScreen() {
             returnKeyType="send"
             editable={state === 'online'}
           />
-          <TouchableOpacity
-            style={[styles.sendBtn, (!input.trim() || state !== 'online') && styles.sendBtnDisabled]}
-            onPress={handleSend}
-            disabled={!input.trim() || state !== 'online'}
-          >
-            <Ionicons name="send" size={20} color={Colors.background} />
-          </TouchableOpacity>
+          {input.trim() ? (
+            <TouchableOpacity
+              style={[styles.sendBtn, (!input.trim() || state !== 'online') && styles.sendBtnDisabled]}
+              onPress={handleSend}
+              disabled={!input.trim() || state !== 'online'}
+            >
+              <Ionicons name="send" size={20} color={Colors.background} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.sendBtn, state !== 'online' && styles.sendBtnDisabled]}
+              onPressIn={handleVoicePressIn}
+              onPressOut={handleVoicePressOut}
+              disabled={state !== 'online'}
+            >
+              <Ionicons
+                name={voice.recordingState === 'holding' || voice.recordingState === 'locked'
+                  ? 'radio' : 'mic'}
+                size={20}
+                color={voice.recordingState === 'holding' || voice.recordingState === 'locked'
+                  ? '#ff4444' : Colors.background}
+              />
+            </TouchableOpacity>
+          )}
         </View>
       </KeyboardAvoidingView>
     </>
@@ -1701,5 +1843,20 @@ const styles = StyleSheet.create({
     color: Colors.textDim,
     fontSize: 12,
     lineHeight: 17,
+  },
+  audioBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  audioLabel: {
+    color: Colors.primary,
+    fontSize: 14,
   },
 });

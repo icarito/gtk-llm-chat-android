@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS messages (
     commands TEXT,
     stanza_id TEXT,
     oob_url TEXT,
+    attachment_mime_type TEXT,
+    attachment_duration REAL,
+    attachment_local_path TEXT,
+    attachment_state TEXT,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
@@ -43,8 +47,11 @@ export interface HistoryRow {
   quick_responses: XmppQuickResponse[];
   commands: XmppInlineCommand[];
   stanza_id: string | null;
-  /** Link del adjunto (XEP-0066 OOB), si el mensaje trae uno. */
   oob_url: string | null;
+  attachment_mime_type: string | null;
+  attachment_duration: number | null;
+  attachment_local_path: string | null;
+  attachment_state: string | null;
 }
 
 export interface HistoryPreviewRow extends HistoryRow {
@@ -102,6 +109,18 @@ async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> 
   if (!names.has('oob_url')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN oob_url TEXT');
   }
+  if (!names.has('attachment_mime_type')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_mime_type TEXT');
+  }
+  if (!names.has('attachment_duration')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_duration REAL');
+  }
+  if (!names.has('attachment_local_path')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_local_path TEXT');
+  }
+  if (!names.has('attachment_state')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_state TEXT');
+  }
 }
 
 function encodeMetadata(value: unknown[] | null | undefined): string | null {
@@ -132,6 +151,10 @@ function decodeRow(row: DbHistoryRow): HistoryRow {
     commands: decodeMetadata<XmppInlineCommand>(row.commands),
     stanza_id: row.stanza_id ?? null,
     oob_url: row.oob_url ?? null,
+    attachment_mime_type: row.attachment_mime_type ?? null,
+    attachment_duration: row.attachment_duration ?? null,
+    attachment_local_path: row.attachment_local_path ?? null,
+    attachment_state: row.attachment_state ?? null,
   };
 }
 
@@ -171,12 +194,17 @@ export const XmppHistory = {
     commands: XmppInlineCommand[] | null = null,
     stanzaId: string | null = null,
     oobUrl: string | null = null,
+    attachmentMimeType: string | null = null,
+    attachmentDuration: number | null = null,
+    attachmentLocalPath: string | null = null,
+    attachmentState: string | null = null,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
       'INSERT OR IGNORE INTO messages '
-        + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, '
+        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -187,6 +215,10 @@ export const XmppHistory = {
         encodeMetadata(commands),
         stanzaId,
         oobUrl,
+        attachmentMimeType,
+        attachmentDuration,
+        attachmentLocalPath,
+        attachmentState,
       ],
     );
     if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
@@ -390,5 +422,25 @@ export const XmppHistory = {
   async cleanupMamShadowDuplicates(): Promise<void> {
     const db = await getDb();
     await cleanupMamShadowDuplicates(db);
+  },
+
+  async updateAttachmentState(
+    bareJid: string,
+    body: string,
+    direction: Direction,
+    state: string,
+    url?: string,
+  ): Promise<void> {
+    const db = await getDb();
+    await db.runAsync(
+      'UPDATE messages SET attachment_state = ?'
+        + (url ? ', oob_url = ?' : '')
+        + ' WHERE bare_jid = ? AND body = ? AND direction = ? AND id = ('
+        + 'SELECT id FROM messages WHERE bare_jid = ? AND body = ? AND direction = ? '
+        + 'ORDER BY timestamp DESC LIMIT 1)',
+      url
+        ? [state, url, bareJid, body, direction, bareJid, body, direction]
+        : [state, bareJid, body, direction, bareJid, body, direction],
+    );
   },
 };
