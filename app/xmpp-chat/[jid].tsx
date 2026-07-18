@@ -45,6 +45,8 @@ function approvalTransportNotice(body: string): 'toast' | 'discard' | null {
     return 'toast';
   }
   if (/^✅\s*aprobado\s*[—-]/i.test(text)) return 'toast';
+  if (/^❌?\s*Failed to submit approval\b/i.test(text)) return 'toast';
+  if (/\bapproval already pending for session\b/i.test(text)) return 'toast';
   if (/^Recibido\s*[·.-]\s*preparando…?$/i.test(text)) return 'discard';
   if (/^Turno completado sin respuesta visible\.?$/i.test(text)) return 'discard';
   return null;
