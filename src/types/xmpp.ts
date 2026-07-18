@@ -84,6 +84,8 @@ export interface XmppPendingAction {
   node?: string;
   style?: XmppButtonStyle;
   expiresAtMs?: number;
+  /** Decision accepted by XMPP; kept visible until gateway resolution arrives. */
+  submitted?: boolean;
 }
 
 export interface ActionParam {

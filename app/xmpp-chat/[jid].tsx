@@ -364,7 +364,7 @@ export default function XmppChatScreen() {
       cancelled = true;
       cancelIdle?.();
     };
-  }, [decodedJid]);
+  }, [decodedJid, refreshTick]);
 
   // Catch up when there is no cache. If cache exists, refresh MAM quietly
   // after initial render; the visible conversation is already usable.
@@ -409,7 +409,7 @@ export default function XmppChatScreen() {
       cancelled = true;
       cancelIdle?.();
     };
-  }, [decodedJid, state]);
+  }, [decodedJid, state, refreshTick]);
 
   const handleLoadOlder = useCallback(async () => {
     if (loadingOlder || exhausted || history.length === 0) return;
@@ -1162,13 +1162,15 @@ export default function XmppChatScreen() {
                   style={[
                     styles.actionPill,
                     { backgroundColor: pillBackgroundForStyle(action.style) },
-                    actionBusy === action.id && styles.actionPillDisabled,
+                    (actionBusy === action.id || action.submitted) && styles.actionPillDisabled,
                   ]}
-                  disabled={state !== 'online' || actionBusy !== null}
+                  disabled={state !== 'online' || actionBusy !== null || action.submitted}
                   onPress={() => handleAnswerAction(action)}
                 >
                   {actionBusy === action.id ? (
                     <ActivityIndicator size="small" color={Colors.background} />
+                  ) : action.submitted ? (
+                    <Text style={styles.actionPillText}>Enviada…</Text>
                   ) : (
                     <Text style={styles.actionPillText}>{action.label}</Text>
                   )}
@@ -1210,9 +1212,9 @@ export default function XmppChatScreen() {
                           style={[
                             styles.actionPill,
                             { backgroundColor: pillBackgroundForStyle(action.style) },
-                            actionBusy === action.id && styles.actionPillDisabled,
+                            (actionBusy === action.id || action.submitted) && styles.actionPillDisabled,
                           ]}
-                          disabled={state !== 'online' || actionBusy !== null}
+                          disabled={state !== 'online' || actionBusy !== null || action.submitted}
                           onPress={() => {
                             setShowPendingPopover(false);
                             handleAnswerAction(action);
@@ -1220,6 +1222,8 @@ export default function XmppChatScreen() {
                         >
                           {actionBusy === action.id ? (
                             <ActivityIndicator size="small" color={Colors.background} />
+                          ) : action.submitted ? (
+                            <Text style={styles.actionPillText}>Enviada…</Text>
                           ) : (
                             <Text style={styles.actionPillText}>{action.label}</Text>
                           )}

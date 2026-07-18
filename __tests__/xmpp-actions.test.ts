@@ -2,6 +2,7 @@ import { parse } from 'ltx';
 import {
   actionsLookLikeApproval,
   approvalFallbackExpiry,
+  classifyApprovalCommandResult,
   parseActionMetadata,
   parseInlineCommands,
   parseQuickResponses,
@@ -84,7 +85,7 @@ describe('NanoClaw XMPP action metadata', () => {
     });
   });
 
-  it('recognizes legacy approvals and assigns a 60-second fallback expiry', () => {
+  it('keeps legacy approvals actionable for the gateway 30-minute TTL', () => {
     const timestamp = '2026-07-18T12:00:00.000Z';
     const quickResponses = [{ label: 'Confirm', value: 'opaque-token' }];
     const message = {
@@ -100,7 +101,7 @@ describe('NanoClaw XMPP action metadata', () => {
 
     expect(actionsLookLikeApproval(message.body, quickResponses, [])).toBe(true);
     expect(approvalFallbackExpiry(message, quickResponses, []))
-      .toBe(new Date(timestamp).getTime() + 60_000);
+      .toBe(new Date(timestamp).getTime() + 30 * 60_000);
   });
 
   it('does not assign the approval fallback to ordinary quick responses', () => {
@@ -118,5 +119,11 @@ describe('NanoClaw XMPP action metadata', () => {
 
     expect(actionsLookLikeApproval(message.body, responses, [])).toBe(false);
     expect(approvalFallbackExpiry(message, responses, [])).toBeUndefined();
+  });
+
+  it('does not confuse submission acknowledgement with resolution', () => {
+    expect(classifyApprovalCommandResult('Command submitted.')).toBe('submitted');
+    expect(classifyApprovalCommandResult('Command expired.')).toBe('expired');
+    expect(classifyApprovalCommandResult('Failed to submit approval')).toBe('rejected');
   });
 });

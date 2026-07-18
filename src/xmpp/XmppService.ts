@@ -540,7 +540,10 @@ function isPendingActionExpired(action: XmppPendingAction, now = Date.now()): bo
   return action.expiresAtMs !== undefined && action.expiresAtMs <= now;
 }
 
-const APPROVAL_FALLBACK_MAX_AGE_MS = 60 * 1000;
+// OpenClaw keeps exec.approval.waitDecision pending for 30 minutes. A shorter
+// client-only timeout hides the sole decision UI without resolving the gateway
+// request, leaving every subsequent exec blocked as “approval already pending”.
+const APPROVAL_FALLBACK_MAX_AGE_MS = 30 * 60 * 1000;
 
 function bodyLooksLikeApproval(body: string): boolean {
   const text = body.toLowerCase();
@@ -580,14 +583,35 @@ export function approvalFallbackExpiry(
     + APPROVAL_FALLBACK_MAX_AGE_MS;
 }
 
+export function classifyApprovalCommandResult(
+  result: string,
+): 'submitted' | 'expired' | 'rejected' {
+  const text = result.trim();
+  if (/command expired\.?/i.test(text)) return 'expired';
+  if (/command submitted\.?/i.test(text)) return 'submitted';
+  return 'rejected';
+}
+
 function pruneExpiredPendingActions(now = Date.now()): boolean {
   let changed = false;
+  const expiredMessages = new Map<string, Set<string>>();
   for (const [id, action] of pendingActions) {
     if (isPendingActionExpired(action, now)) {
       pendingActions.delete(id);
       changed = true;
+      const ids = expiredMessages.get(action.conversationJid) ?? new Set<string>();
+      ids.add(action.messageId);
+      expiredMessages.set(action.conversationJid, ids);
     }
   }
+  // La card no debe resucitar desde SQLite al volver a la conversación. Una
+  // sola pregunta puede aportar varios botones, por eso se deduplica por
+  // conversación + messageId antes de limpiar su metadata.
+  expiredMessages.forEach((messageIds, conversationJid) => {
+    messageIds.forEach((messageId) => {
+      XmppHistory.markResolvedByStanzaId(conversationJid, messageId).catch(() => {});
+    });
+  });
   return changed;
 }
 
@@ -2031,7 +2055,27 @@ export const XmppService = {
     if (action.kind === 'quick-response') {
       await this.sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
     } else if (action.jid && action.node) {
-      await executeCommand(action.jid, action.node);
+      const result = await executeCommand(action.jid, action.node);
+      const outcome = classifyApprovalCommandResult(result);
+      if (outcome === 'expired') {
+        XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId)
+          .catch(() => {});
+        removePendingActionsByMessage(action.conversationJid, action.messageId);
+        return;
+      }
+      if (outcome !== 'submitted') {
+        throw new Error(result || 'Approval command was not accepted');
+      }
+      // Submission is not resolution. Keep the card (disabled) until the
+      // gateway emits its authoritative resolved payload/XEP-0308 correction.
+      for (const [id, candidate] of pendingActions) {
+        if (candidate.conversationJid === action.conversationJid
+            && candidate.messageId === action.messageId) {
+          pendingActions.set(id, { ...candidate, submitted: true });
+        }
+      }
+      notifyPendingActions();
+      return;
     }
     XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId).catch(() => {});
     removePendingActionsByMessage(action.conversationJid, action.messageId);
