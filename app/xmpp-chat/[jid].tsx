@@ -58,6 +58,12 @@ function approvalTransportNotice(body: string): 'toast' | 'discard' | null {
   if (/\bapproval already pending for session\b/i.test(text)) return 'toast';
   if (/^Recibido\s*[·.-]\s*preparando…?$/i.test(text)) return 'discard';
   if (/^Turno completado sin respuesta visible\.?$/i.test(text)) return 'discard';
+  if (/Command approval requested/i.test(text) && /Approval:/i.test(text)) {
+    return 'discard';
+  }
+  if (/```\s*```/.test(text) && !/🔒/.test(text)) {
+    return 'discard';
+  }
   return null;
 }
 
@@ -158,6 +164,7 @@ function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
             <Text
               key={`text-${index}-${blockIndex}`}
               selectable
+              selectionColor={isMine ? 'rgba(255,255,255,0.4)' : Colors.primary}
               style={[styles.messageText, isMine && styles.messageTextMine]}
             >
               {block.value}
@@ -994,6 +1001,14 @@ export default function XmppChatScreen() {
     setActionBusy(action.id);
     try {
       await answerPendingAction(action.id);
+    } catch (err) {
+      // Sin este catch la excepción moría como unhandled rejection: el botón
+      // se rehabilitaba por el finally pero el usuario no sabía que su
+      // decisión no llegó. XmppService ya revirtió `submitted`, así que la
+      // card vuelve a ser accionable y el aviso explica por qué.
+      const notice = String(err);
+      if (Platform.OS === 'android') ToastAndroid.show(notice, ToastAndroid.SHORT);
+      else setControlNotice(notice);
     } finally {
       setActionBusy(null);
     }

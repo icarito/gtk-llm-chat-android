@@ -20,6 +20,7 @@ import type {
 import {
   dismissNotificationForJid,
   getStoredExpoPushToken,
+  isNotificationGraceActive,
   notifyXmppMessage,
   setConnected,
   updateContactNameCache,
@@ -30,7 +31,7 @@ import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { buildFormElement } from '@/xmpp/xep-0004';
-import { buildCommandExecuteStanza, markdownToPlain } from '@/xmpp/outbound-render';
+import { buildCommandExecuteStanza, extractApprovalSummary, markdownToPlain } from '@/xmpp/outbound-render';
 
 // ── Utils ──
 
@@ -594,6 +595,8 @@ export function classifyApprovalCommandResult(
   const text = result.trim();
   if (/command expired\.?|already resolved|no longer pending|not found/i.test(text)) return 'expired';
   if (/command submitted\.?/i.test(text)) return 'submitted';
+  if (/allow-once|allow-always|deny/i.test(text)) return 'submitted';
+  if (/aprobado|denegado/i.test(text)) return 'submitted';
   return 'rejected';
 }
 
@@ -698,7 +701,7 @@ function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
   if (msg.direction === 'out') {
     expireMatchingQuickResponses(key, msg.body, msg.timestamp);
     resolveApprovalActionsFromOwnMessage(key, msg.body);
-  } else if (notifyIncoming && !msg.correctedAtMs) {
+  } else if (notifyIncoming && !msg.correctedAtMs && !isNotificationGraceActive()) {
     const contact = contactsMap.get(msg.from);
     notifyXmppMessage(msg, contact?.name);
   }
@@ -711,7 +714,11 @@ function addPendingActions(
   commandsIn: XmppInlineCommand[],
 ) {
   const timestampMs = new Date(msg.timestamp).getTime();
-  const detail = markdownToPlain(msg.body ?? '');
+  const isApproval = bodyLooksLikeApproval(msg.body ?? '')
+    || actionsLookLikeApproval(msg.body ?? '', quickResponsesIn, commandsIn);
+  const detail = isApproval
+    ? extractApprovalSummary(msg.body ?? '')
+    : markdownToPlain(msg.body ?? '');
   const now = Date.now();
   const fallbackExpiry = approvalFallbackExpiry(msg, quickResponsesIn, commandsIn);
   // Descartar acciones ya caducadas por expiresAtMs explícito.
@@ -785,10 +792,28 @@ function removePendingActionsByMessage(conversationJid: string, messageId: strin
   if (changed) notifyPendingActions();
 }
 
+/** ¿Esta acción concreta es una decisión de aprobación?
+ *
+ *  Paridad con `_actions_look_like_approval` de GTK (chat_window.py:2833).
+ *  El ack de una aprobación no dice CUÁL resolvió, así que retiramos por
+ *  heurística; acotarla al subconjunto que parece approval evita arrastrar
+ *  command-items inline que siguen siendo válidos. */
+function actionLooksLikeApproval(action: XmppPendingAction): boolean {
+  const words = ['allow', 'approve', 'deny', 'reject', 'permitir', 'aprobar', 'denegar', 'rechazar'];
+  const label = (action.label ?? '').trim().toLowerCase();
+  if (words.some((word) => label.includes(word))) return true;
+  const node = (action.node ?? '').toLowerCase();
+  return node.includes('approve') || node.includes('approval');
+}
+
 function resolvePendingCommandActionsForConversation(conversationJid: string) {
   const messageIds = new Set<string>();
   for (const [id, action] of pendingActions) {
     if (action.conversationJid !== conversationJid || action.kind !== 'command') continue;
+    // Antes se retiraba TODA command-action de la conversación. GTK filtra por
+    // contenido y es el comportamiento correcto: un ack de aprobación no
+    // invalida un comando inline que no es una aprobación.
+    if (!actionLooksLikeApproval(action)) continue;
     messageIds.add(action.messageId);
     pendingActions.delete(id);
   }
@@ -2134,34 +2159,40 @@ export const XmppService = {
       removePendingAction(actionId);
       return;
     }
-    if (action.kind === 'quick-response') {
-      await this.sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
-    } else if (action.jid && action.node) {
-      const result = await executeCommand(action.jid, action.node);
-      const outcome = classifyApprovalCommandResult(result);
-      if (outcome === 'expired') {
-        XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId)
-          .catch(() => {});
-        removePendingActionsByMessage(action.conversationJid, action.messageId);
-        return;
+    // Marcar como submitted inmediatamente: la UI atenúa el botón y la card
+    // se retira visualmente. La corrección XEP-0308 autoritativa o la
+    // clasificación del resultado del IQ limpia el estado persistente.
+    action.submitted = true;
+    notifyPendingActions();
+    try {
+      if (action.kind === 'quick-response') {
+        await this.sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
+      } else if (action.jid && action.node) {
+        const result = await executeCommand(action.jid, action.node);
+        const outcome = classifyApprovalCommandResult(result);
+        if (outcome === 'expired') {
+          XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId)
+            .catch(() => {});
+          removePendingActionsByMessage(action.conversationJid, action.messageId);
+          return;
+        }
       }
-      if (outcome !== 'submitted') {
-        throw new Error(result || 'Approval command was not accepted');
-      }
-      // Una decisión aceptada invalida la acción en este dispositivo. La
-      // corrección XEP-0308 autoritativa todavía puede reemplazar el texto,
-      // pero no debe ser necesaria para retirar ni para no restaurar la card.
-      await XmppHistory.markResolvedByStanzaId(
-        action.conversationJid,
-        action.messageId,
-      );
-      removePendingActionsByMessage(action.conversationJid, action.messageId);
-      dismissNotificationForJid(action.conversationJid).catch(() => {});
-      return;
+    } catch (err) {
+      // El optimismo de `submitted` solo vale mientras el envío siga en pie.
+      // Si executeCommand falla (sin conexión, IQ inválido, timeout de 30 s)
+      // la card se quedaba en "Enviada…" para una decisión que nunca salió, y
+      // sin aviso: la excepción moría como unhandled rejection. Revertimos y
+      // re-lanzamos para que la UI avise, igual que hace GTK en on_error.
+      action.submitted = false;
+      notifyPendingActions();
+      throw err;
     }
-    XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId).catch(() => {});
+    await XmppHistory.markResolvedByStanzaId(
+      action.conversationJid,
+      action.messageId,
+    );
     removePendingActionsByMessage(action.conversationJid, action.messageId);
-    removePendingAction(actionId);
+    dismissNotificationForJid(action.conversationJid).catch(() => {});
   },
 
   async listAdhocCommands(targetJid: string): Promise<XmppInlineCommand[]> {

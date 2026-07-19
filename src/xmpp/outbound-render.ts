@@ -165,3 +165,22 @@ export function markdownToPlain(md: string): string {
       .replace(/^\s*[-*]\s+/gm, '• ')
   );
 }
+
+export function extractApprovalSummary(body: string): string {
+  const markdown = markdownToPlain(body);
+  const parts: string[] = [];
+  const warningMatch = markdown.match(/^\s*⚠️\s*(.+?)\s*$/m);
+  if (warningMatch && warningMatch[1].trim()) {
+    parts.push(`⚠️ ${warningMatch[1].trim()}`);
+  }
+  const lockMatch = markdown.match(/^\s*🔒\s*(.+?)\s*$/m);
+  if (lockMatch && lockMatch[1].trim()) {
+    parts.push(lockMatch[1].trim());
+  }
+  if (parts.length > 0) return parts.join('\n');
+  const pendingMatch = markdown.match(/Pending command:\s*\n([\s\S]*)/i);
+  if (pendingMatch && pendingMatch[1].trim()) {
+    return pendingMatch[1].trim();
+  }
+  return markdown.trim();
+}

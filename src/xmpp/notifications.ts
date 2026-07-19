@@ -168,7 +168,9 @@ function isReplay(msg: XmppMessage): boolean {
 }
 
 export function isXmppNotificationNoise(msg: XmppMessage): boolean {
-  if (msg.commands?.length || msg.quickResponses?.length) return false;
+  if (msg.commands?.length || msg.quickResponses?.length) {
+    return false;
+  }
   const text = String(msg.body ?? '').trim().replace(/\s+/g, ' ');
   if (!text) return true;
   return [
@@ -182,7 +184,14 @@ export function isXmppNotificationNoise(msg: XmppMessage): boolean {
 }
 
 let lastConnectTime = 0;
-const CONNECT_GRACE_MS = 5000;
+/** Ventana de silencio post-conexión: Prosody/MAM entrega carbons y mensajes
+ *  pendientes durante varios segundos tras el handshake. 15 s cubre la ráfaga
+ *  típica de una flota de 8 agentes sin suprimir notificaciones legítimas. */
+const CONNECT_GRACE_MS = 15_000;
+
+export function isNotificationGraceActive(): boolean {
+  return lastConnectTime > 0 && Date.now() - lastConnectTime < CONNECT_GRACE_MS;
+}
 
 export function setConnected() {
   lastConnectTime = Date.now();
