@@ -59,6 +59,22 @@ export interface HistoryPreviewRow extends HistoryRow {
 }
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+/** La base se creó en esta ejecución (app recién instalada o datos borrados).
+ *  Mientras dure, lo que llega es puesta al día y no debe notificar. */
+let freshInstall = false;
+let freshInstallUntilMs = 0;
+/** Cuánto dura la puesta al día inicial. Generoso a propósito: el servidor
+ *  entrega lo pendiente de cada contacto en ráfaga y con una flota grande eso
+ *  puede tardar. Pasada la ventana, un mensaje realmente nuevo de esa primera
+ *  sesión vuelve a notificar con normalidad. */
+const FRESH_INSTALL_CATCHUP_MS = 2 * 60 * 1000;
+
+function isFreshInstallWindowActive(): boolean {
+  if (!freshInstall) return false;
+  if (Date.now() < freshInstallUntilMs) return true;
+  freshInstall = false;
+  return false;
+}
 
 function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
@@ -69,6 +85,15 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
     // pantalla que abra un chat vuelva a intentarlo.
     dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
       await db.execAsync('PRAGMA journal_mode=WAL;');
+      // ¿Instalación nueva? Hay que saberlo ANTES de aplicar el esquema, que
+      // crea la tabla. En una base recién creada, todo lo que el servidor
+      // entregue a continuación es puesta al día, no mensajes nuevos: sin
+      // esto, reinstalar la app notifica una vez por cada contacto.
+      const existing = await db.getAllAsync<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+      );
+      freshInstall = existing.length === 0;
+      if (freshInstall) freshInstallUntilMs = Date.now() + FRESH_INSTALL_CATCHUP_MS;
       await db.execAsync(SCHEMA);
       await migrateMetadataColumns(db);
       return db;
@@ -120,6 +145,16 @@ async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> 
   }
   if (!names.has('attachment_state')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_state TEXT');
+  }
+  // Dedup de notificaciones que sobrevive al reinicio del proceso. El Set
+  // `notifiedIds` de notifications.ts es memoria pura, así que tras reabrir la
+  // app cualquier mensaje reentregado por el servidor volvía a notificar.
+  //
+  // DEFAULT 1 a propósito: al agregar la columna, todo lo que YA está en la
+  // base es historial y no debe notificar nada. Solo las filas escritas a
+  // partir de aquí nacen con 0 y compiten por una notificación.
+  if (!names.has('notified')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN notified INTEGER NOT NULL DEFAULT 1');
   }
 }
 
@@ -203,8 +238,8 @@ export const XmppHistory = {
     const result = await db.runAsync(
       'INSERT OR IGNORE INTO messages '
         + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, '
-        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, notified) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -219,6 +254,11 @@ export const XmppHistory = {
         attachmentDuration,
         attachmentLocalPath,
         attachmentState,
+        // Explícito, no por DEFAULT: en una instalación nueva todo lo que
+        // entra es puesta al día y nace ya notificado (1), así que nadie
+        // reclama notificación por ello. En una base existente nace en 0 y
+        // compite normalmente. Los salientes tampoco notifican.
+        isFreshInstallWindowActive() || direction === 'out' ? 1 : 0,
       ],
     );
     if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
@@ -252,6 +292,47 @@ export const XmppHistory = {
       [bareJid, body, direction, timestamp],
     );
     return row?.present === 1;
+  },
+
+  /** ¿La base se creó en esta ejecución? Durante una instalación nueva el
+   *  servidor entrega de golpe lo pendiente de cada contacto, y notificarlo
+   *  produce una cascada de "mensaje nuevo" que en realidad es historial. */
+  async isFreshInstall(): Promise<boolean> {
+    await getDb();
+    return isFreshInstallWindowActive();
+  },
+
+  /** Reclama el derecho a notificar este mensaje, de forma persistente.
+   *
+   *  Devuelve true UNA sola vez por (bare_jid, stanza_id): la primera que
+   *  gana marca la fila y las siguientes reciben false. A diferencia del Set
+   *  `notifiedIds` en memoria, esto sobrevive al reinicio del proceso, que es
+   *  lo que hacía renotificar todo al reabrir la app.
+   *
+   *  Sin stanza_id no se puede correlacionar, así que se concede el permiso y
+   *  la dedup queda a cargo del Set en memoria (comportamiento anterior). */
+  async claimNotification(bareJid: string, stanzaId: string | null): Promise<boolean> {
+    if (!stanzaId) return true;
+    const db = await getDb();
+    try {
+      const result = await db.runAsync(
+        'UPDATE messages SET notified = 1 '
+          + 'WHERE bare_jid = ? AND stanza_id = ? AND notified = 0',
+        [bareJid, stanzaId],
+      );
+      // 0 filas = ya estaba notificada, o todavía no se persistió. En el
+      // segundo caso conceder es lo correcto: es un mensaje realmente nuevo
+      // que aún no llegó a la base.
+      if (result.changes > 0) return true;
+      const row = await db.getFirstAsync<{ present: number }>(
+        'SELECT 1 AS present FROM messages WHERE bare_jid = ? AND stanza_id = ? LIMIT 1',
+        [bareJid, stanzaId],
+      );
+      return row?.present !== 1;
+    } catch {
+      // Nunca perder una notificación por un fallo de la caché local.
+      return true;
+    }
   },
 
   /** Newest `limit` messages, returned oldest-first for rendering. */

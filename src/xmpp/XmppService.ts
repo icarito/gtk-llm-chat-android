@@ -798,7 +798,7 @@ function removePendingActionsByMessage(conversationJid: string, messageId: strin
  *  El ack de una aprobación no dice CUÁL resolvió, así que retiramos por
  *  heurística; acotarla al subconjunto que parece approval evita arrastrar
  *  command-items inline que siguen siendo válidos. */
-function actionLooksLikeApproval(action: XmppPendingAction): boolean {
+export function actionLooksLikeApproval(action: XmppPendingAction): boolean {
   const words = ['allow', 'approve', 'deny', 'reject', 'permitir', 'aprobar', 'denegar', 'rechazar'];
   const label = (action.label ?? '').trim().toLowerCase();
   if (words.some((word) => label.includes(word))) return true;
@@ -1874,7 +1874,13 @@ export const XmppService = {
                 partnerJid, carbonBody, direction, delayTs,
               ).catch(() => false)
               : false;
-            addMessageToMap(carbonMsg, !wasCached);
+            // Mismo corte que en la rama de mensajes en vivo: durante la
+            // puesta al día de una instalación nueva, los carbons que el
+            // servidor reenvía no son novedades.
+            const carbonCatchingUp = direction === 'in'
+              ? await XmppHistory.isFreshInstall().catch(() => false)
+              : false;
+            addMessageToMap(carbonMsg, !wasCached && !carbonCatchingUp);
             if (direction === 'in') {
               addPendingActions(partnerJid, carbonMsg,
                 carbonMsg.quickResponses ?? [], carbonMsg.commands ?? []);
@@ -1960,7 +1966,12 @@ export const XmppService = {
       const wasCached = await XmppHistory.hasMessage(
         platformId, msg.body, 'in', msg.timestamp,
       ).catch(() => false);
-      addMessageToMap(msg, !wasCached);
+      // Instalación nueva: el servidor vuelca lo pendiente de CADA contacto y
+      // la base vacía hace que wasCached sea siempre false, así que sin este
+      // corte cada mensaje del volcado dispara su notificación. La ventana se
+      // cierra sola pasada la puesta al día (ver XmppHistory).
+      const catchingUp = await XmppHistory.isFreshInstall().catch(() => false);
+      addMessageToMap(msg, !wasCached && !catchingUp);
       addPendingActions(platformId, msg, quickResponses, commands);
       // Cache it so the next catch-up starts from here instead of refetching.
       const hasPending = Boolean(quickResponses.length || commands.length);
