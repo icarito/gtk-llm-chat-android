@@ -30,7 +30,7 @@ import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { buildFormElement } from '@/xmpp/xep-0004';
-import { markdownToPlain } from '@/xmpp/outbound-render';
+import { buildCommandExecuteStanza, markdownToPlain } from '@/xmpp/outbound-render';
 
 // ── Utils ──
 
@@ -516,6 +516,10 @@ function notifyState() {
   stateListeners.forEach((fn) => fn(connectionState));
 }
 
+function isConnectionOnline(): boolean {
+  return connectionState === 'online';
+}
+
 function notifyContacts() {
   const arr = [...contactsMap.values()];
   updateContactNameCache(arr);
@@ -588,7 +592,7 @@ export function classifyApprovalCommandResult(
   result: string,
 ): 'submitted' | 'expired' | 'rejected' {
   const text = result.trim();
-  if (/command expired\.?/i.test(text)) return 'expired';
+  if (/command expired\.?|already resolved|no longer pending|not found/i.test(text)) return 'expired';
   if (/command submitted\.?/i.test(text)) return 'submitted';
   return 'rejected';
 }
@@ -655,6 +659,18 @@ function expireMatchingQuickResponses(conversationJid: string, body: string, msg
   if (changed) notifyPendingActions();
 }
 
+function resolveApprovalActionsFromOwnMessage(conversationJid: string, body: string) {
+  // A decision made by another resource arrives as an XEP-0280 sent carbon.
+  // Approval cards prefer XEP-0050 commands, so the quick-response matcher
+  // above cannot associate that plain /approve text with them. Retire the
+  // command cards immediately; the authoritative XEP-0308 correction will
+  // still replace the exact originating message when the gateway resolves.
+  if (!/^\/approve\s+[A-Za-z0-9][A-Za-z0-9._:-]*\s+(?:allow-once|allow-always|always|deny)\b/i.test(body.trim())) {
+    return;
+  }
+  resolvePendingCommandActionsForConversation(conversationJid);
+}
+
 /** Marca un mensaje saliente como enviado/fallido y notifica a la UI. */
 function updateOutboundSendState(
   to: string,
@@ -671,7 +687,7 @@ function updateOutboundSendState(
   notifyMessages();
 }
 
-function addMessageToMap(msg: XmppMessage) {
+function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
   // Conversations are keyed by the OTHER party, whichever way the message went.
   const key = msg.direction === 'out' ? msg.to : msg.from;
   if (!key) return;
@@ -681,7 +697,8 @@ function addMessageToMap(msg: XmppMessage) {
 
   if (msg.direction === 'out') {
     expireMatchingQuickResponses(key, msg.body, msg.timestamp);
-  } else if (!msg.correctedAtMs) {
+    resolveApprovalActionsFromOwnMessage(key, msg.body);
+  } else if (notifyIncoming && !msg.correctedAtMs) {
     const contact = contactsMap.get(msg.from);
     notifyXmppMessage(msg, contact?.name);
   }
@@ -766,6 +783,21 @@ function removePendingActionsByMessage(conversationJid: string, messageId: strin
     }
   }
   if (changed) notifyPendingActions();
+}
+
+function resolvePendingCommandActionsForConversation(conversationJid: string) {
+  const messageIds = new Set<string>();
+  for (const [id, action] of pendingActions) {
+    if (action.conversationJid !== conversationJid || action.kind !== 'command') continue;
+    messageIds.add(action.messageId);
+    pendingActions.delete(id);
+  }
+  if (messageIds.size === 0) return;
+  notifyPendingActions();
+  messageIds.forEach((messageId) => {
+    XmppHistory.markResolvedByStanzaId(conversationJid, messageId).catch(() => {});
+  });
+  dismissNotificationForJid(conversationJid).catch(() => {});
 }
 
 /**
@@ -904,10 +936,10 @@ async function executeCommand(targetJid: string, node: string, form?: DataForm):
   }
 
   const first = await xmppClient.iqCaller.request(
-    xml(
-      'iq',
-      { type: 'set', to: targetJid, id: `cmd-${Date.now().toString(36)}` },
-      xml('command', { xmlns: COMMAND_NS, node, action: 'execute' }),
+    buildCommandExecuteStanza(
+      targetJid,
+      node,
+      `cmd-${Date.now().toString(36)}`,
     ),
     30000,
   );
@@ -977,6 +1009,7 @@ async function enableExpoPushIfAvailable(): Promise<void> {
 /** Backoff: 5s, 10s, 20s, 40s, 80s, tope 2min. */
 const RETRY_BASE_MS = 5000;
 const RETRY_MAX_MS = 120000;
+const CONNECT_TIMEOUT_MS = 30000;
 
 function stopRetry() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
@@ -1004,7 +1037,11 @@ function scheduleReconnect() {
     if (connectionState === 'online') { stopRetry(); return; }
     try {
       await XmppService.reconnectIfNeeded(accountConfig);
-      stopRetry();
+      // reconnectIfNeeded deliberately coalesces concurrent attempts. A
+      // coalesced call can return while the shared handshake is still in
+      // `connecting`; that is not recovery and must not cancel our watchdog.
+      if (isConnectionOnline()) stopRetry();
+      else scheduleReconnect();
     } catch {
       scheduleReconnect();
     }
@@ -1608,7 +1645,7 @@ export const XmppService = {
       scheduleReconnect();
     });
 
-    xmppClient.on('stanza', (stanza: Element) => {
+    xmppClient.on('stanza', async (stanza: Element) => {
       // ── XEP-0030: alguien pregunta qué soportamos ──
       // El servidor lo pregunta cuando ve un caps `ver` que no tiene cacheado.
       // Es el único momento en que puede enterarse de que queremos el nodo de
@@ -1766,7 +1803,12 @@ export const XmppService = {
           if (carbonBody) {
             const fromAttr = (message.attrs.from as string) || '';
             const toAttr = (message.attrs.to as string) || '';
-            const delayTs = extractDelayStamp(message) ?? new Date().toISOString();
+            // A queued carbon normally carries XEP-0203 <delay/> on the outer
+            // wrapper/forwarded node, not necessarily on the inner message.
+            const delayTs = extractDelayStamp(message)
+              ?? (forwarded ? extractDelayStamp(forwarded) : null)
+              ?? extractDelayStamp(stanza)
+              ?? new Date().toISOString();
 
             const fromBare = bareJid(fromAttr);
             const toBare = bareJid(toAttr);
@@ -1802,7 +1844,12 @@ export const XmppService = {
               oobUrl: extractOobUrl(message, carbonBody),
             };
 
-            addMessageToMap(carbonMsg);
+            const wasCached = direction === 'in'
+              ? await XmppHistory.hasMessage(
+                partnerJid, carbonBody, direction, delayTs,
+              ).catch(() => false)
+              : false;
+            addMessageToMap(carbonMsg, !wasCached);
             if (direction === 'in') {
               addPendingActions(partnerJid, carbonMsg,
                 carbonMsg.quickResponses ?? [], carbonMsg.commands ?? []);
@@ -1851,6 +1898,14 @@ export const XmppService = {
         return;
       }
 
+      // El ack puede llegar como stanza independiente (incluidos carbons de
+      // una decisión tomada en GTK u otro Android), no necesariamente como
+      // XEP-0308. Al aceptarse/expirar el comando ya no queda una aprobación
+      // accionable en ningún cliente.
+      if (classifyApprovalCommandResult(body) !== 'rejected') {
+        resolvePendingCommandActionsForConversation(platformId);
+      }
+
       const isGroup = type === 'groupchat' || isGroupJidEx(platformId, undefined);
       const isMention = !isGroup || messageMentionsBot(stanza, body, botNick, config.jid);
       const { quickResponses, commands } = parseActionMetadata(stanza);
@@ -1874,7 +1929,13 @@ export const XmppService = {
       if (seenIds.has(msg.id)) return;
       seenIds.add(msg.id);
 
-      addMessageToMap(msg);
+      // On cold start Prosody can replay queued messages after the short
+      // connection grace period. They still belong in the live view, but an
+      // exact row already in SQLite proves they are not a new notification.
+      const wasCached = await XmppHistory.hasMessage(
+        platformId, msg.body, 'in', msg.timestamp,
+      ).catch(() => false);
+      addMessageToMap(msg, !wasCached);
       addPendingActions(platformId, msg, quickResponses, commands);
       // Cache it so the next catch-up starts from here instead of refetching.
       const hasPending = Boolean(quickResponses.length || commands.length);
@@ -1891,12 +1952,29 @@ export const XmppService = {
       ).catch(() => {});
     });
 
+    const startingClient = xmppClient;
+    let connectTimeout: ReturnType<typeof setTimeout> | null = null;
     try {
-      await xmppClient.start();
+      await Promise.race([
+        startingClient.start(),
+        new Promise<never>((_resolve, reject) => {
+          connectTimeout = setTimeout(
+            () => reject(new Error('XMPP connection timed out')),
+            CONNECT_TIMEOUT_MS,
+          );
+        }),
+      ]);
     } catch (err) {
+      if (xmppClient === startingClient) {
+        await startingClient.stop().catch(() => {});
+        xmppClient = null;
+      }
       connectionState = 'error';
       notifyState();
+      scheduleReconnect();
       throw err;
+    } finally {
+      if (connectTimeout) clearTimeout(connectTimeout);
     }
   },
 
@@ -2070,15 +2148,15 @@ export const XmppService = {
       if (outcome !== 'submitted') {
         throw new Error(result || 'Approval command was not accepted');
       }
-      // Submission is not resolution. Keep the card (disabled) until the
-      // gateway emits its authoritative resolved payload/XEP-0308 correction.
-      for (const [id, candidate] of pendingActions) {
-        if (candidate.conversationJid === action.conversationJid
-            && candidate.messageId === action.messageId) {
-          pendingActions.set(id, { ...candidate, submitted: true });
-        }
-      }
-      notifyPendingActions();
+      // Una decisión aceptada invalida la acción en este dispositivo. La
+      // corrección XEP-0308 autoritativa todavía puede reemplazar el texto,
+      // pero no debe ser necesaria para retirar ni para no restaurar la card.
+      await XmppHistory.markResolvedByStanzaId(
+        action.conversationJid,
+        action.messageId,
+      );
+      removePendingActionsByMessage(action.conversationJid, action.messageId);
+      dismissNotificationForJid(action.conversationJid).catch(() => {});
       return;
     }
     XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId).catch(() => {});

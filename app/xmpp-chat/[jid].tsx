@@ -16,6 +16,8 @@ import {
   Linking,
   Alert,
   ToastAndroid,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
@@ -33,6 +35,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useVoiceRecorder } from '@/xmpp/voiceRecorder';
 import { isAudioUrl } from '@/xmpp/audioUtils';
 import { Audio } from 'expo-av';
+import { splitMarkdownTables, type MarkdownTable } from '@/xmpp/markdownTables';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
 /** Ventana tras la última corrección XEP-0308 en la que la burbuja se
@@ -85,6 +88,38 @@ function splitCodeFences(content: string): MessagePart[] {
   return parts.length ? parts : [{ type: 'text', value: content }];
 }
 
+function MarkdownTableView({ table, isMine }: { table: MarkdownTable; isMine: boolean }) {
+  const widths = table.headers.map((header, column) => Math.min(
+    260,
+    Math.max(100, ...[header, ...table.rows.map((row) => row[column] ?? '')]
+      .map((cell) => cell.length * 8 + 24)),
+  ));
+  return (
+    <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+      <View style={styles.markdownTable}>
+        {[table.headers, ...table.rows].map((row, rowIndex) => (
+          <View key={`row-${rowIndex}`} style={styles.markdownTableRow}>
+            {widths.map((width, column) => (
+              <Text
+                key={`cell-${column}`}
+                selectable
+                style={[
+                  styles.markdownTableCell,
+                  rowIndex === 0 && styles.markdownTableHeader,
+                  isMine && styles.messageTextMine,
+                  { width, textAlign: table.align[column] ?? 'left' },
+                ]}
+              >
+                {row[column] ?? ''}
+              </Text>
+            ))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
 function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
   return (
     <View style={styles.messageBody}>
@@ -112,15 +147,23 @@ function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
           );
         }
         if (!part.value.trim()) return null;
-        return (
-          <Text
-            key={`text-${index}`}
-            selectable
-            style={[styles.messageText, isMine && styles.messageTextMine]}
-          >
-            {part.value}
-          </Text>
-        );
+        return splitMarkdownTables(part.value).map((block, blockIndex) => (
+          block.type === 'table' ? (
+            <MarkdownTableView
+              key={`table-${index}-${blockIndex}`}
+              table={block.value}
+              isMine={isMine}
+            />
+          ) : (
+            <Text
+              key={`text-${index}-${blockIndex}`}
+              selectable
+              style={[styles.messageText, isMine && styles.messageTextMine]}
+            >
+              {block.value}
+            </Text>
+          )
+        ));
       })}
     </View>
   );
@@ -407,8 +450,17 @@ export default function XmppChatScreen() {
   const [commandBusyNode, setCommandBusyNode] = useState<string | null>(null);
   const [showPendingPopover, setShowPendingPopover] = useState(false);
   const [telemetry, setTelemetry] = useState<Record<string, unknown>>({});
+  const [toolBubbles, setToolBubbles] = useState<XmppMessage[]>([]);
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
+  const followsLatestRef = useRef(true);
+  const activeToolBubbleRef = useRef<string | null>(null);
   const hasCachedHistoryRef = useRef(false);
+
+  useEffect(() => {
+    setToolBubbles([]);
+    activeToolBubbleRef.current = null;
+    followsLatestRef.current = true;
+  }, [decodedJid]);
 
   const voice = useVoiceRecorder();
 
@@ -539,7 +591,7 @@ export default function XmppChatScreen() {
     () => messages.get(decodedJid) || [],
     [decodedJid, messages],
   );
-  const sortedMsgs = mergeMessages(history, liveMsgs)
+  const sortedMsgs = mergeMessages(history, liveMsgs, toolBubbles)
     .filter((message) => approvalTransportNotice(message.body) === null);
   const msgCount = sortedMsgs.length;
   const toastedTransportIds = useRef(new Set<string>());
@@ -594,6 +646,45 @@ export default function XmppChatScreen() {
     [contacts, decodedJid],
   );
   const agentStatus = useMemo(() => parseAgentStatus(contact?.status), [contact?.status]);
+
+  // PEP tool activity is UI telemetry, not an archive message. Mirror GTK by
+  // keeping one mutable bubble while a tool is active, then retaining the
+  // completed bubble as a local record. It never enters MAM and never causes a
+  // second notification or a second agent turn.
+  useEffect(() => {
+    const tool = String(telemetry.tool ?? agentStatus.tool ?? '').trim();
+    const isBusy = contact?.presence === 'dnd'
+      || ['processing', 'busy'].includes(agentStatus.activity.trim().toLowerCase());
+    if (!tool || !isBusy) {
+      activeToolBubbleRef.current = null;
+      return;
+    }
+
+    const body = `🛠️ Usando herramienta: ${tool}`;
+    const activeId = activeToolBubbleRef.current;
+    if (activeId) {
+      setToolBubbles((items) => items.map((item) => (
+        item.id === activeId
+          ? { ...item, body, correctedAtMs: Date.now() }
+          : item
+      )));
+      return;
+    }
+
+    const id = `local-tool-${Date.now()}`;
+    activeToolBubbleRef.current = id;
+    setToolBubbles((items) => [...items, {
+      id,
+      from: decodedJid,
+      to: '',
+      type: 'chat',
+      body,
+      timestamp: new Date().toISOString(),
+      direction: 'in',
+      isGroup: false,
+      correctedAtMs: Date.now(),
+    }]);
+  }, [agentStatus.activity, agentStatus.tool, contact?.presence, decodedJid, telemetry.tool]);
 
   // El agente volvió a conectarse (reinicio del gateway): su set de comandos y
   // su telemetría pueden haber cambiado. Sólo dispara en la transición
@@ -715,6 +806,26 @@ export default function XmppChatScreen() {
   // latest message is where the viewport already sits — no scrollToEnd, no
   // timing games, and prepending older history can't yank the view.
   const inverted = useMemo(() => [...sortedMsgs].reverse(), [sortedMsgs]);
+  const latestRenderToken = inverted.length > 0
+    ? `${inverted[0]!.id}\0${inverted[0]!.body}`
+    : '';
+
+  const handleListScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      // In an inverted FlatList offset 0 is the newest edge. Once the user
+      // moves away, incoming corrections must not pull them back down.
+      followsLatestRef.current = event.nativeEvent.contentOffset.y <= 48;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!followsLatestRef.current || inverted.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [inverted.length, latestRenderToken]);
 
   // Mensajes tuyos que el agente aún no ha contestado. Es optimista y local:
   // se enciende al enviar, sin esperar a que el servidor publique presencia.
@@ -809,6 +920,7 @@ export default function XmppChatScreen() {
     const trimmed = input.trim();
     if (!trimmed) return;
     setInput('');
+    followsLatestRef.current = true;
     lastComposingSentRef.current = 0;
     // sendMessage publishes the outgoing message to the service's map and
     // caches it — no local copy needed here.
@@ -978,21 +1090,18 @@ export default function XmppChatScreen() {
       const visibleBody = contentWithoutAttachmentUrl(item.body, attachmentUrl);
       const isStreaming = !isMine
         && item.correctedAtMs !== undefined
-        && Date.now() - item.correctedAtMs < STREAMING_WINDOW_MS;
+        && nowTick - item.correctedAtMs < STREAMING_WINDOW_MS;
       const audioUrl = isAudioUrl(attachmentUrl) ? attachmentUrl
         : isAudioUrl(item.body) ? item.body.match(URL_RE)?.[0]?.replace(TRAILING_URL_PUNCT_RE, '') || null
           : null;
+      const isToolActivity = !isMine && /^🛠️\s+Usando herramienta:/i.test(visibleBody);
 
       return (
         <View style={[styles.messageRow,
           isMine ? styles.messageRowRight : styles.messageRowLeft]}>
-          {/* Long-press en cualquier parte de la burbuja copia el mensaje.
-              El `selectable` de los Text sigue ahí, pero en la práctica la
-              selección se desmonta con cada re-render de la lista (llegan
-              presencia/telemetría todo el tiempo), así que esta es la vía
-              confiable de copiar. */}
-          <Pressable
-            onLongPress={() => copyMessage(item.body)}
+          {/* No envolver el contenido en Pressable: captura el long-press y
+              evita que Android abra los tiradores nativos de selección. */}
+          <View
             style={[
               styles.bubble,
               isMine ? styles.bubbleRight : styles.bubbleLeft,
@@ -1029,9 +1138,33 @@ export default function XmppChatScreen() {
             ) : null}
             {/* El body de un adjunto suele repetir la URL o una etiqueta genérica. */}
             {visibleBody ? (
-              <MessageBody body={visibleBody} isMine={isMine} />
+              isToolActivity ? (
+                <ScrollView
+                  style={styles.toolOutputScroll}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator
+                >
+                  <MessageBody body={visibleBody} isMine={isMine} />
+                </ScrollView>
+              ) : (
+                <MessageBody body={visibleBody} isMine={isMine} />
+              )
             ) : null}
             <View style={styles.bubbleFooter}>
+              {visibleBody ? (
+                <TouchableOpacity
+                  style={styles.messageCopyButton}
+                  onPress={() => copyMessage(item.body)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Copiar mensaje completo"
+                >
+                  <Ionicons
+                    name="copy-outline"
+                    size={13}
+                    color={isMine ? 'rgba(255,255,255,0.7)' : Colors.textDim}
+                  />
+                </TouchableOpacity>
+              ) : null}
               {isStreaming && (
                 <ActivityIndicator size={12} color={Colors.primary} />
               )}
@@ -1046,7 +1179,7 @@ export default function XmppChatScreen() {
                 <Text style={styles.sendFailedText}>⚠ No enviado — tocar para reintentar</Text>
               </TouchableOpacity>
             )}
-          </Pressable>
+          </View>
         </View>
       );
     },
@@ -1217,6 +1350,8 @@ export default function XmppChatScreen() {
           renderItem={renderMessage}
           contentContainerStyle={styles.listContent}
           extraData={msgCount}
+          onScroll={handleListScroll}
+          scrollEventThrottle={32}
           // Inverted: the "end" of the list is the TOP of the screen, i.e. the
           // oldest message — so reaching it is what pulls in more history.
           onEndReached={handleLoadOlder}
@@ -1482,6 +1617,27 @@ const styles = StyleSheet.create({
   messageBody: { gap: 6 },
   messageText: { fontSize: 15, color: Colors.text, lineHeight: 21 },
   messageTextMine: { color: Colors.userBubbleText },
+  markdownTable: {
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  markdownTableRow: { flexDirection: 'row' },
+  markdownTableCell: {
+    color: Colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  markdownTableHeader: {
+    fontWeight: '700',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
   codeBlock: {
     minWidth: 220,
     overflow: 'hidden',
@@ -1527,7 +1683,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: 6,
   },
+  messageCopyButton: {
+    minWidth: 28,
+    minHeight: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   bubbleStreaming: { borderWidth: 1, borderColor: Colors.primary },
+  toolOutputScroll: { maxHeight: 180 },
   sendFailedText: { fontSize: 12, color: Colors.error, marginTop: 4 },
   typingRow: {
     flexDirection: 'row',

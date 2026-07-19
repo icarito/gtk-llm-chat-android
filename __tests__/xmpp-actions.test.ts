@@ -86,6 +86,36 @@ describe('NanoClaw XMPP action metadata', () => {
     });
   });
 
+  it('accepts the gateway dual approval payload and prefers XEP-0050', () => {
+    const stanza = parse(
+      `<message xmlns="jabber:client" type="chat">
+         <body>OpenClaw Approval required.</body>
+         <response xmlns="urn:xmpp:tmp:quick-response" label="Allow Once" value="/approve approval-id allow-once"/>
+         <response xmlns="urn:xmpp:tmp:quick-response" label="Deny" value="/approve approval-id deny"/>
+         <query xmlns="http://jabber.org/protocol/disco#items" node="http://jabber.org/protocol/commands">
+           <item jid="operator@hablar.fuentelibre.org/openclaw-operator" node="cmd:approval-message:0" name="Allow Once"/>
+           <item jid="operator@hablar.fuentelibre.org/openclaw-operator" node="cmd:approval-message:2" name="Deny"/>
+         </query>
+       </message>`,
+    );
+
+    expect(parseActionMetadata(stanza)).toEqual({
+      quickResponses: [],
+      commands: [
+        {
+          jid: 'operator@hablar.fuentelibre.org/openclaw-operator',
+          node: 'cmd:approval-message:0',
+          name: 'Allow Once',
+        },
+        {
+          jid: 'operator@hablar.fuentelibre.org/openclaw-operator',
+          node: 'cmd:approval-message:2',
+          name: 'Deny',
+        },
+      ],
+    });
+  });
+
   it('keeps legacy approvals actionable for the gateway 30-minute TTL', () => {
     const timestamp = '2026-07-18T12:00:00.000Z';
     const quickResponses = [{ label: 'Confirm', value: 'opaque-token' }];
@@ -125,6 +155,7 @@ describe('NanoClaw XMPP action metadata', () => {
   it('does not confuse submission acknowledgement with resolution', () => {
     expect(classifyApprovalCommandResult('Command submitted.')).toBe('submitted');
     expect(classifyApprovalCommandResult('Command expired.')).toBe('expired');
+    expect(classifyApprovalCommandResult('Approval already resolved.')).toBe('expired');
     expect(classifyApprovalCommandResult('Failed to submit approval')).toBe('rejected');
   });
 

@@ -238,6 +238,22 @@ export const XmppHistory = {
     return result.changes > 0;
   },
 
+  /** True when this exact live/archive message is already in the cache. */
+  async hasMessage(
+    bareJid: string,
+    body: string,
+    direction: Direction,
+    timestamp: string,
+  ): Promise<boolean> {
+    const db = await getDb();
+    const row = await db.getFirstAsync<{ present: number }>(
+      'SELECT 1 AS present FROM messages '
+        + 'WHERE bare_jid = ? AND body = ? AND direction = ? AND timestamp = ? LIMIT 1',
+      [bareJid, body, direction, timestamp],
+    );
+    return row?.present === 1;
+  },
+
   /** Newest `limit` messages, returned oldest-first for rendering. */
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();

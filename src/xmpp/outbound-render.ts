@@ -6,6 +6,19 @@ import type { DataForm } from '@/types/xmpp';
 const DISCO_ITEMS_NS = 'http://jabber.org/protocol/disco#items';
 const COMMAND_NS = 'http://jabber.org/protocol/commands';
 
+/** Build the first XEP-0050 request emitted by an inline approval button. */
+export function buildCommandExecuteStanza(
+  targetJid: string,
+  node: string,
+  id: string,
+): Element {
+  return xml(
+    'iq',
+    { type: 'set', to: targetJid, id },
+    xml('command', { xmlns: COMMAND_NS, node, action: 'execute' }),
+  );
+}
+
 export function buildQueryCommandStanza(
   title: string,
   question: string,
