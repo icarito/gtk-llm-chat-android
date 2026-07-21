@@ -3,12 +3,14 @@ import {
   actionsLookLikeApproval,
   approvalFallbackExpiry,
   classifyApprovalCommandResult,
+  findDenyAction,
+  isRestoredActionStale,
   parseActionMetadata,
   parseInlineCommands,
   parseQuickResponses,
 } from '@/xmpp/XmppService';
 import { isXmppNotificationNoise } from '@/xmpp/notifications';
-import type { XmppMessage } from '@/types/xmpp';
+import type { XmppMessage, XmppPendingAction } from '@/types/xmpp';
 
 describe('NanoClaw XMPP action metadata', () => {
   it('parses standard and legacy quick responses', () => {
@@ -178,5 +180,77 @@ describe('NanoClaw XMPP action metadata', () => {
       body: 'Approval required',
       commands: [{ jid: 'agent@example.org', node: 'cmd:1', name: 'Allow Once' }],
     })).toBe(false);
+  });
+});
+
+describe('restauración de acciones pendientes', () => {
+  const MINUTE = 60 * 1000;
+  const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+
+  it('respeta expiresAtMs explícito por encima de la antigüedad', () => {
+    // Vieja pero con expiry futuro explícito => sigue viva.
+    expect(isRestoredActionStale(iso(60 * MINUTE), {
+      expiresAtMs: Date.now() + 5 * MINUTE,
+    })).toBe(false);
+    // Reciente pero ya vencida por expiry explícito => muerta.
+    expect(isRestoredActionStale(iso(MINUTE), {
+      expiresAtMs: Date.now() - MINUTE,
+    })).toBe(true);
+  });
+
+  it('cae a la antigüedad de 15 min cuando no hay expiresAtMs', () => {
+    expect(isRestoredActionStale(iso(5 * MINUTE), {})).toBe(false);
+    expect(isRestoredActionStale(iso(20 * MINUTE), {})).toBe(true);
+  });
+
+  it('conserva la acción cuando el timestamp no es fechable', () => {
+    // Conservador a propósito: preferimos una tarjeta de más que perder una
+    // aprobación que el gateway todavía espera.
+    expect(isRestoredActionStale('no-es-una-fecha', {})).toBe(false);
+  });
+});
+
+describe('findDenyAction (gesto de deslizar al costado)', () => {
+  const action = (over: Partial<XmppPendingAction>): XmppPendingAction => ({
+    id: 'a', conversationJid: 'x@y', messageId: 'm', timestamp: new Date().toISOString(),
+    detail: '', kind: 'command', label: 'Allow Once', ...over,
+  } as XmppPendingAction);
+
+  it('prefiere el estilo danger aunque la etiqueta no sea reconocible', () => {
+    // Etiqueta deliberadamente opaca (localizada, o redactada por el servidor):
+    // si la detección por estilo se rompe, NINGUNA regla de etiqueta la salva y
+    // el test falla. Con "Deny" como etiqueta el caso pasaría por el fallback y
+    // no probaría nada.
+    const actions = [
+      action({ id: '1', label: 'Verweigern', style: 'danger' }),
+      action({ id: '2', label: 'Allow Once', style: 'success' }),
+    ];
+    expect(findDenyAction(actions)?.id).toBe('1');
+  });
+
+  it('el estilo gana sobre una etiqueta negativa en otra acción', () => {
+    const actions = [
+      action({ id: '1', label: 'No, gracias' }),
+      action({ id: '2', label: 'Verweigern', style: 'danger' }),
+    ];
+    expect(findDenyAction(actions)?.id).toBe('2');
+  });
+
+  it('nunca devuelve una acción de aprobación si no hay ninguna negativa', () => {
+    const actions = [
+      action({ id: '1', label: 'Allow Once', style: 'success' }),
+      action({ id: '2', label: 'Allow Always', style: 'success' }),
+    ];
+    expect(findDenyAction(actions)).toBeNull();
+  });
+
+  it('reconoce etiquetas negativas sin estilo', () => {
+    expect(findDenyAction([action({ id: '1', label: 'Denegar' })])?.id).toBe('1');
+    expect(findDenyAction([action({ id: '1', label: 'Rechazar' })])?.id).toBe('1');
+  });
+
+  it('no confunde "Allow" con una negación por contener otra palabra', () => {
+    const actions = [action({ id: '1', label: 'Allow Once, no prompt' })];
+    expect(findDenyAction(actions)).toBeNull();
   });
 });

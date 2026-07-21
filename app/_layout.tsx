@@ -10,7 +10,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { XmppProvider } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
-import { setupNotifications, setAppForeground } from '@/xmpp/notifications';
+import { setupNotifications, setAppForeground, dismissStaleNotifications } from '@/xmpp/notifications';
 import { shortcutJid } from '@/xmpp/shortcuts';
 import * as Notifications from 'expo-notifications';
 import * as QuickActions from 'expo-quick-actions';
@@ -69,6 +69,10 @@ export default function RootLayout() {
 
   useEffect(() => {
     setupNotifications().catch(() => {});
+    // Push remoto (XEP-0357) llega directo al SO sin pasar por el filtro de
+    // isReplay del cliente; sin esto, cada cold start mezclaba avisos de
+    // horas atrás con los nuevos en la barra de notificaciones.
+    dismissStaleNotifications().catch(() => {});
 
     let mounted = true;
     Notifications.getLastNotificationResponseAsync()

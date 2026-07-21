@@ -41,8 +41,20 @@ export function useVoiceRecorder() {
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [capture, setCapture] = useState<VoiceCapture | null>(null);
   const [recorderError, setRecorderError] = useState<string | null>(null);
+  // Único estado en vivo que le hacía falta a la UI: antes la duración solo
+  // se calculaba una vez, al soltar, así que no había manera de mostrar un
+  // contador que creciera mientras se graba.
+  const [elapsedMs, setElapsedMs] = useState(0);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const startTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (recordingState !== 'holding' && recordingState !== 'locked') return;
+    const id = setInterval(() => {
+      setElapsedMs(Date.now() - startTimeRef.current);
+    }, 200);
+    return () => clearInterval(id);
+  }, [recordingState]);
 
   const requestPermission = useCallback(async () => {
     const { granted } = await Audio.requestPermissionsAsync();
@@ -56,23 +68,27 @@ export function useVoiceRecorder() {
     return true;
   }, []);
 
-  useEffect(() => {
-    Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-    }).catch(() => {});
-  }, []);
-
   const startRecording = useCallback(async () => {
     if (!(await requestPermission())) return;
     try {
+      // stopRecording deja allowsRecordingIOS en false al terminar (para no
+      // acaparar el micrófono entre grabaciones). Sin re-habilitarlo aquí,
+      // solo la primera grabación de la vida del componente funcionaba: las
+      // siguientes creaban el Audio.Recording igual, pero con el modo de
+      // audio equivocado — en Android eso produce una grabación vacía o
+      // directamente inútil sin ningún error visible.
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      });
       const recording = new Audio.Recording();
       await recording.prepareToRecordAsync(recordingOptions);
       await recording.startAsync();
       recordingRef.current = recording;
       startTimeRef.current = Date.now();
+      setElapsedMs(0);
       setRecordingState('holding');
       setRecorderError(null);
     } catch (e) {
@@ -134,6 +150,7 @@ export function useVoiceRecorder() {
     setRecordingState('idle');
     setCapture(null);
     setRecorderError(null);
+    setElapsedMs(0);
   }, []);
 
   const setLocked = useCallback(() => {
@@ -146,6 +163,7 @@ export function useVoiceRecorder() {
     recordingState,
     capture,
     recorderError,
+    elapsedMs,
     startRecording,
     stopRecording,
     setUploading,

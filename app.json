@@ -20,7 +20,9 @@
       },
       "package": "org.fuentelibre.gtk_llm_chat",
       "versionCode": 2,
-      "permissions": ["RECORD_AUDIO"]
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -58,6 +60,9 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
-  }
+    },
+    "sdkVersion": "52.0.0",
+    "entryPoint": ".vscode/exponentIndex.js"
+  },
+  "name": "gtk-llm-chat-android"
 }

@@ -475,17 +475,21 @@ export const XmppHistory = {
    * Apply an incoming XEP-0308 correction to the question identified by
    * stanzaId: replaces the body and clears quick_responses/commands (now
    * resolved) so a later history restore doesn't show the card again.
+   * Also moves the row's timestamp to when the correction actually landed —
+   * otherwise a turn resolved minutes after its placeholder kept sorting and
+   * displaying under the placeholder's original (much earlier) time.
    */
   async applyCorrectionByStanzaId(
     bareJid: string,
     stanzaId: string,
     body: string,
+    timestamp: string,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
-      'UPDATE messages SET body = ?, quick_responses = NULL, commands = NULL '
+      'UPDATE messages SET body = ?, timestamp = ?, quick_responses = NULL, commands = NULL '
         + 'WHERE bare_jid = ? AND stanza_id = ?',
-      [body, bareJid, stanzaId],
+      [body, timestamp, bareJid, stanzaId],
     );
     return result.changes > 0;
   },

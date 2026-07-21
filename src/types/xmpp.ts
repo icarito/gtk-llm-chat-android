@@ -78,7 +78,15 @@ export interface XmppPendingAction {
   conversationJid: string;
   messageId: string;
   timestamp: string;
+  /** Resumen corto para la tarjeta (warning + comando). */
   detail: string;
+  /**
+   * Cuerpo completo del mensaje, para la vista expandida. `detail` viene
+   * recortado por extractApprovalSummary (descarta cwd y expiración), así que
+   * sin esto el botón de info mostraba exactamente el mismo texto que la
+   * tarjeta y no revelaba nada nuevo.
+   */
+  detailFull?: string;
   kind: 'quick-response' | 'command';
   label: string;
   value?: string;

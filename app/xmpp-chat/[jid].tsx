@@ -23,13 +23,20 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
-import { XmppService } from '@/xmpp/XmppService';
+import { XmppService, findDenyAction } from '@/xmpp/XmppService';
 import { setActiveChatJid, dismissNotificationForJid } from '@/xmpp/notifications';
 import { displayName, presenceColor } from '@/xmpp/presence';
 import { pendingOutboundCount } from '@/xmpp/pendingCount';
 import { formatAgentActivity, parseAgentStatus } from '@/xmpp/agentStatus';
 import { Colors } from '@/constants/theme';
 import type { XmppButtonStyle, XmppInlineCommand, XmppMessage, XmppPendingAction } from '@/types/xmpp';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  runOnJS,
+} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useVoiceRecorder } from '@/xmpp/voiceRecorder';
@@ -625,6 +632,7 @@ export default function XmppChatScreen() {
       id: string;
       timestamp: string;
       detail: string;
+      detailFull?: string;
       actions: XmppPendingAction[];
     }>();
 
@@ -638,6 +646,7 @@ export default function XmppChatScreen() {
           id: key,
           timestamp: action.timestamp,
           detail: action.detail,
+          ...(action.detailFull ? { detailFull: action.detailFull } : {}),
           actions: [action],
         });
       }
@@ -1013,6 +1022,57 @@ export default function XmppChatScreen() {
       setActionBusy(null);
     }
   }, [answerPendingAction]);
+
+  // ── Gestos de la tarjeta sticky ──
+  // Arrastrar hacia arriba abre el detalle completo; arrastrar hacia el
+  // costado deniega. El objetivo es poder resolver una aprobación sin apuntar
+  // a un botón concreto, que en una tarjeta al pie de pantalla es incómodo.
+  const stickyTranslateX = useSharedValue(0);
+  const stickyTranslateY = useSharedValue(0);
+
+  const denyAction = useMemo(
+    () => (visiblePending ? findDenyAction(visiblePending.actions) : null),
+    [visiblePending],
+  );
+
+  const canActOnSticky = state === 'online' && actionBusy === null;
+
+  const handleSwipeDeny = useCallback(() => {
+    if (!denyAction || denyAction.submitted || !canActOnSticky) return;
+    handleAnswerAction(denyAction);
+  }, [denyAction, canActOnSticky, handleAnswerAction]);
+
+  const stickyPanGesture = useMemo(() => Gesture.Pan()
+    .activeOffsetX([-16, 16])
+    .activeOffsetY([-16, 16])
+    .onUpdate((event) => {
+      // Solo se sigue el eje dominante, para que un arrastre diagonal no
+      // parezca que va a disparar las dos cosas a la vez.
+      if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
+        stickyTranslateX.value = denyAction ? event.translationX : 0;
+        stickyTranslateY.value = 0;
+      } else {
+        stickyTranslateY.value = Math.min(0, event.translationY);
+        stickyTranslateX.value = 0;
+      }
+    })
+    .onEnd((event) => {
+      const horizontal = Math.abs(event.translationX) > Math.abs(event.translationY);
+      if (horizontal && denyAction && Math.abs(event.translationX) > 120) {
+        runOnJS(handleSwipeDeny)();
+      } else if (!horizontal && event.translationY < -48) {
+        runOnJS(setShowPendingPopover)(true);
+      }
+      stickyTranslateX.value = withSpring(0);
+      stickyTranslateY.value = withSpring(0);
+    }), [denyAction, handleSwipeDeny, stickyTranslateX, stickyTranslateY]);
+
+  const stickyAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: stickyTranslateX.value },
+      { translateY: stickyTranslateY.value },
+    ],
+  }));
 
   const handleToggleBypass = useCallback(async () => {
     const next = !bypassEnabled;
@@ -1412,7 +1472,9 @@ export default function XmppChatScreen() {
         )}
 
         {visiblePending && (
-          <View style={styles.pendingCard}>
+          <GestureDetector gesture={stickyPanGesture}>
+          <Animated.View style={[styles.pendingCard, stickyAnimatedStyle]}>
+            <View style={styles.stickyGrabber} />
             <View style={styles.pendingHeader}>
               <Text style={styles.pendingTitle}>
                 {pendingGroups.length > 1
@@ -1444,7 +1506,7 @@ export default function XmppChatScreen() {
             <Text style={styles.pendingDetail} numberOfLines={2}>
               {visiblePending.detail}
             </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pendingActions}>
+            <View style={styles.pendingActions}>
               {visiblePending.actions.map((action) => (
                 <TouchableOpacity
                   key={action.id}
@@ -1465,8 +1527,16 @@ export default function XmppChatScreen() {
                   )}
                 </TouchableOpacity>
               ))}
-            </ScrollView>
-          </View>
+            </View>
+            {denyAction ? (
+              <Text style={styles.stickyHint}>
+                Desliza ↑ para ver el detalle · ← → para denegar
+              </Text>
+            ) : (
+              <Text style={styles.stickyHint}>Desliza ↑ para ver el detalle</Text>
+            )}
+          </Animated.View>
+          </GestureDetector>
         )}
 
         <Modal
@@ -1489,12 +1559,16 @@ export default function XmppChatScreen() {
                     <Text style={styles.popoverRowTitle}>
                       Pendiente {index + 1}
                     </Text>
-                    {group.detail ? (
-                      <Text style={styles.popoverRowDetail} numberOfLines={3}>
-                        {group.detail}
+                    {/* Cuerpo completo y sin recortar: es lo único que
+                        distingue esta vista de la tarjeta. Con `detail` y
+                        numberOfLines={3} el botón de info mostraba el mismo
+                        texto que ya se veía y no revelaba cwd ni expiración. */}
+                    {(group.detailFull ?? group.detail) ? (
+                      <Text style={styles.popoverRowDetail} selectable>
+                        {group.detailFull ?? group.detail}
                       </Text>
                     ) : null}
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pendingActions}>
+                    <View style={styles.pendingActions}>
                       {group.actions.map((action) => (
                         <TouchableOpacity
                           key={action.id}
@@ -1518,7 +1592,7 @@ export default function XmppChatScreen() {
                           )}
                         </TouchableOpacity>
                       ))}
-                    </ScrollView>
+                    </View>
                   </View>
                 ))}
               </ScrollView>
@@ -1542,6 +1616,25 @@ export default function XmppChatScreen() {
               width: `${Math.round(contextFraction * 100)}%`,
               backgroundColor: contextBarColor,
             }]} />
+          </View>
+        )}
+
+        {/* Antes la única señal de "estoy grabando" era el ícono del propio
+            botón que el dedo está tapando mientras se mantiene presionado —
+            invisible en la práctica. Esta barra vive arriba del input, fuera
+            del área del dedo, y crece/actualiza mientras dura la grabación. */}
+        {(voice.recordingState === 'holding' || voice.recordingState === 'locked'
+          || voice.recordingState === 'uploading') && (
+          <View style={styles.recordingBar}>
+            <View style={styles.recordingDot} />
+            <Text style={styles.recordingTime}>
+              {formatDuration(voice.elapsedMs / 1000)}
+            </Text>
+            <Text style={styles.recordingHint}>
+              {voice.recordingState === 'uploading'
+                ? 'Enviando…'
+                : 'Suelta para enviar'}
+            </Text>
           </View>
         )}
 
@@ -1780,11 +1873,25 @@ const styles = StyleSheet.create({
     marginTop: 6,
     gap: 8,
   },
+  // Asa visual: sin ella el gesto de arrastrar no se descubre.
+  stickyGrabber: {
+    alignSelf: 'center',
+    width: 32,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.surfaceBorder,
+    marginBottom: 2,
+  },
+  stickyHint: { color: Colors.textDim, fontSize: 11, textAlign: 'center' },
   pendingHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   pendingTitle: { color: Colors.warning, fontSize: 13, fontWeight: '700' },
   pendingTime: { color: Colors.textDim, fontSize: 12 },
   pendingDetail: { color: Colors.text, fontSize: 13, lineHeight: 18 },
-  pendingActions: { gap: 8, paddingRight: 4 },
+  // Los botones envuelven a una segunda línea en vez de vivir en un
+  // ScrollView horizontal: con 3 acciones (Allow Once / Allow Always / Deny)
+  // el scroll dejaba "Deny" fuera de pantalla, invisible salvo que el usuario
+  // adivinara que había que arrastrar.
+  pendingActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingRight: 4 },
   actionPill: {
     minHeight: 34,
     paddingHorizontal: 12,
@@ -1978,6 +2085,33 @@ const styles = StyleSheet.create({
   controlNotice: { color: Colors.textDim, fontSize: 12, flexShrink: 1 },
   controlNoticeError: { color: Colors.error },
   disconnectedBar: { backgroundColor: Colors.error, padding: 8, alignItems: 'center' },
+  recordingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.surfaceBorder,
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ff4444',
+  },
+  recordingTime: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  recordingHint: {
+    color: Colors.textDim,
+    fontSize: 13,
+    marginLeft: 'auto',
+  },
   disconnectedText: { color: Colors.text, fontSize: 13 },
   inputBar: {
     flexDirection: 'row', alignItems: 'flex-end', padding: 8,

@@ -87,6 +87,16 @@ export default function XmppScreen() {
     });
   }, [contacts, previewFor]);
 
+  // Si el usuario terminó en el formulario con una cuenta ya guardada (logout
+  // manual, o la sesión nunca llegó a autoconectar), no tiene sentido hacerlo
+  // retipear JID y servidor — sólo la contraseña, que XmppContext no expone
+  // fuera de XmppService por seguridad.
+  useEffect(() => {
+    if (!account) return;
+    setJid((prev) => prev || account.jid);
+    setServer((prev) => prev || account.service);
+  }, [account]);
+
   useEffect(() => {
     // Sembramos con lo ya cacheado (los eventos PEP sólo llegan cuando el
     // contacto publica algo nuevo; uno que no cambió su avatar no emitiría).
@@ -171,8 +181,11 @@ export default function XmppScreen() {
     router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(contactJid) } } as never);
   }, [router]);
 
-  // Show connecting spinner while auto-connecting or manual connecting
-  if (state === 'connecting') {
+  // Spinner a pantalla completa sólo para el login inicial, sin roster ni
+  // account todavía. Una reconexión automática (mismo estado 'connecting',
+  // pero con account ya presente) no debe pasar por acá: ver el bloque de
+  // abajo, que la mantiene sobre el roster con un banner en vez de éste.
+  if (state === 'connecting' && !account) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color={Colors.primary} />
@@ -181,14 +194,19 @@ export default function XmppScreen() {
     );
   }
 
-  if (state === 'online' && account) {
+  // Una vez que hubo sesión, quedarse en la lista de contactos aunque el
+  // estado caiga a offline/error/connecting (reconexión automática en curso):
+  // volver al formulario de login borraba el roster entero y no comunicaba
+  // "reconectando", sólo "no hay nada acá".
+  if ((state === 'online' || state === 'offline' || state === 'error' || state === 'connecting') && account) {
+    const isReconnecting = state !== 'online';
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerTitle}>{hostOf(account.jid)}</Text>
             <View style={styles.statusRow}>
-              <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
+              <View style={[styles.statusDot, { backgroundColor: isReconnecting ? Colors.error : Colors.success }]} />
               <Text style={styles.headerJid}>{account.jid}</Text>
               {loadingPreviews && <ActivityIndicator size="small" color={Colors.primary} />}
             </View>
@@ -197,6 +215,13 @@ export default function XmppScreen() {
             <Ionicons name="power" size={20} color={Colors.error} />
           </TouchableOpacity>
         </View>
+
+        {isReconnecting && (
+          <View style={styles.reconnectBanner}>
+            <ActivityIndicator size="small" color={Colors.text} />
+            <Text style={styles.reconnectBannerText}>Desconectado — reconectando...</Text>
+          </View>
+        )}
 
         <FlatList
           data={sortedContacts}
@@ -379,6 +404,19 @@ const styles = StyleSheet.create({
   },
   disconnectBtn: {
     padding: 8,
+  },
+  reconnectBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: Colors.error,
+  },
+  reconnectBannerText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.text,
   },
   listContent: {
     paddingTop: 8,

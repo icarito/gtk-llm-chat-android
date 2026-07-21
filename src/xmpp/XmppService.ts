@@ -719,6 +719,13 @@ function addPendingActions(
   const detail = isApproval
     ? extractApprovalSummary(msg.body ?? '')
     : markdownToPlain(msg.body ?? '');
+  // Cuerpo íntegro para la vista expandida (gesto de arrastrar hacia arriba /
+  // botón de info). Solo se guarda si aporta algo sobre el resumen: para una
+  // approval incluye cwd y la expiración, que extractApprovalSummary descarta.
+  const detailFullText = markdownToPlain(msg.body ?? '').trim();
+  const detailFull = detailFullText && detailFullText !== detail.trim()
+    ? detailFullText
+    : undefined;
   const now = Date.now();
   const fallbackExpiry = approvalFallbackExpiry(msg, quickResponsesIn, commandsIn);
   // Descartar acciones ya caducadas por expiresAtMs explícito.
@@ -740,6 +747,7 @@ function addPendingActions(
       messageId: msg.id,
       timestamp: msg.timestamp,
       detail,
+      ...(detailFull ? { detailFull } : {}),
       kind: 'quick-response',
       label: response.label,
       value: response.value,
@@ -757,6 +765,7 @@ function addPendingActions(
       messageId: msg.id,
       timestamp: msg.timestamp,
       detail,
+      ...(detailFull ? { detailFull } : {}),
       kind: 'command',
       label: command.name,
       jid: command.jid,
@@ -798,6 +807,25 @@ function removePendingActionsByMessage(conversationJid: string, messageId: strin
  *  El ack de una aprobación no dice CUÁL resolvió, así que retiramos por
  *  heurística; acotarla al subconjunto que parece approval evita arrastrar
  *  command-items inline que siguen siendo válidos. */
+/**
+ * La acción de denegar dentro de un grupo, para el gesto de deslizar al
+ * costado. Se busca por estilo (el plugin marca Deny como `danger`) y sólo
+ * después por etiqueta: NUNCA por posición, porque el orden lo decide el
+ * servidor y un índice fijo acabaría aprobando lo que el usuario quería negar.
+ * Devuelve null si no hay una acción claramente negativa — en ese caso el
+ * gesto no debe hacer nada.
+ */
+export function findDenyAction(actions: XmppPendingAction[]): XmppPendingAction | null {
+  const byStyle = actions.find((action) => action.style === 'danger');
+  if (byStyle) return byStyle;
+  const words = ['deny', 'reject', 'denegar', 'rechazar', 'no'];
+  const byLabel = actions.find((action) => {
+    const label = action.label.trim().toLowerCase();
+    return words.some((word) => label === word || label.startsWith(`${word} `));
+  });
+  return byLabel ?? null;
+}
+
 export function actionLooksLikeApproval(action: XmppPendingAction): boolean {
   const words = ['allow', 'approve', 'deny', 'reject', 'permitir', 'aprobar', 'denegar', 'rechazar'];
   const label = (action.label ?? '').trim().toLowerCase();
@@ -832,43 +860,44 @@ function resolvePendingCommandActionsForConversation(conversationJid: string) {
  * (expireMatchingQuickResponses), this carries the real replaceId so it
  * works no matter which question it resolves, not just the newest one.
  */
-function applyIncomingCorrection(conversationJid: string, replaceId: string, body: string) {
+function applyIncomingCorrection(conversationJid: string, replaceId: string, body: string, timestamp: string) {
   removePendingActionsByMessage(conversationJid, replaceId);
-  XmppHistory.applyCorrectionByStanzaId(conversationJid, replaceId, body).catch(() => {});
+  // El timestamp original (llegada del placeholder/pregunta) se sustituye por
+  // el de la corrección: es lo que resuelve el turno y lo que gtk/Gajim
+  // muestran como hora del mensaje. Sin esto, un mensaje resuelto minutos
+  // después seguía ordenado y mostrado con la hora de su versión inicial.
+  XmppHistory.applyCorrectionByStanzaId(conversationJid, replaceId, body, timestamp).catch(() => {});
   dismissNotificationForJid(conversationJid).catch(() => {});
   // La burbuja visible también: sin esto la corrección solo llega al SQLite y
   // el streaming del gateway (burbuja única XEP-0308 que crece) no se ve hasta
   // recargar el historial. `correctedAtMs` alimenta la afordancia "en curso".
   const existing = messagesMap.get(conversationJid);
-  if (existing) {
-    const idx = existing.findIndex((m) => m.id === replaceId);
-    if (idx >= 0) {
-      const updated = [...existing];
-      updated[idx] = {
-        ...updated[idx],
-        body,
-        quickResponses: undefined,
-        commands: undefined,
-        correctedAtMs: Date.now(),
-      };
-      messagesMap.set(conversationJid, updated);
-      notifyMessages();
-      return;
-    }
+  const idx = existing?.findIndex((m) => m.id === replaceId) ?? -1;
+  if (!existing || idx < 0) {
+    // Alineado a GTK 2026-07-20 (_on_llm_response_correction: "una corrección
+    // sin widget correlacionado se ignora, nunca debe sobrescribir por
+    // aproximación"). Antes esto sintetizaba un mensaje nuevo con el body de
+    // la corrección — pensado para "la app se abrió a mitad de turno", pero
+    // ese mismo código corre para CUALQUIER corrección sin match, incluidos
+    // carbons de otra conversación que esta sesión nunca cargó
+    // (ver el call site vía forwarded carbon más abajo): un body de
+    // corrección aislado, sin el mensaje original, sin card, sin contexto —
+    // un mensaje fantasma. El caso legítimo que la síntesis pretendía cubrir
+    // ya lo resuelve MAM/historial al reabrir el chat: el mensaje original
+    // (ya resuelto) llega completo desde el servidor, no como un fragmento.
+    return;
   }
-  // Corrección a un mensaje que no tenemos en memoria (p. ej. la app se abrió
-  // a mitad de turno): mostrarla como mensaje nuevo antes que perder contenido.
-  addMessageToMap({
-    id: replaceId,
-    from: conversationJid,
-    to: accountConfig?.jid ?? '',
-    type: 'chat',
+  const updated = [...existing];
+  updated[idx] = {
+    ...updated[idx],
     body,
-    timestamp: new Date().toISOString(),
-    direction: 'in',
-    isGroup: isGroupJidEx(conversationJid, undefined),
+    timestamp,
+    quickResponses: undefined,
+    commands: undefined,
     correctedAtMs: Date.now(),
-  });
+  };
+  messagesMap.set(conversationJid, updated);
+  notifyMessages();
 }
 
 function noteText(command: Element): string {
@@ -1269,7 +1298,7 @@ function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
 const PENDING_ACTION_MAX_AGE_MS = 15 * 60 * 1000;
 
 /** True si la acción caducó (por expiresAtMs explícito, o por antigüedad si no lo trae). */
-function isRestoredActionStale(timestamp: string, action: { expiresAtMs?: number } | XmppInlineCommand): boolean {
+export function isRestoredActionStale(timestamp: string, action: { expiresAtMs?: number } | XmppInlineCommand): boolean {
   const now = Date.now();
   const expiresAtMs = (action as { expiresAtMs?: number }).expiresAtMs;
   if (expiresAtMs !== undefined) return expiresAtMs <= now;
@@ -1293,7 +1322,15 @@ async function restorePendingQuickResponses(contactJid: string, messages: XmppMe
       msg.timestamp, { ...c, expiresAtMs: c.expiresAtMs ?? fallbackExpiry },
     ));
     if (freshQr.length === 0 && freshCmd.length === 0) {
-      XmppHistory.markResolvedByStanzaId(contactJid, msg.id).catch(() => {});
+      // NO borrar la metadata aquí. Caducado por reloj local ≠ resuelto en el
+      // servidor: si el gateway sigue esperando la decisión, borrar
+      // quick_responses/commands destruye el único registro de que hubo una
+      // aprobación pendiente y la vuelve irrecuperable, incluso si más tarde
+      // llega una corrección XEP-0308 o el usuario reinstala. Se omite el
+      // render (la tarjeta no reaparece) pero la fila se conserva, que es lo
+      // que ya hace el GTK (_restore_history_actions hace return sin borrar).
+      // La limpieza real la hace answerPendingAction al resolver, o
+      // applyIncomingCorrection cuando el servidor confirma el cierre.
       continue;
     }
 
@@ -1849,7 +1886,7 @@ export const XmppService = {
             // camino directo, sólo cambia de dónde sale la stanza.
             const replaceId = parseReplaceId(message);
             if (replaceId) {
-              applyIncomingCorrection(partnerJid, replaceId, carbonBody);
+              applyIncomingCorrection(partnerJid, replaceId, carbonBody, delayTs);
               return;
             }
 
@@ -1925,7 +1962,7 @@ export const XmppService = {
       // gateway) — se trata aparte, no como mensaje nuevo.
       const replaceId = parseReplaceId(stanza);
       if (replaceId) {
-        applyIncomingCorrection(platformId, replaceId, body);
+        applyIncomingCorrection(platformId, replaceId, body, extractDelayStamp(stanza) ?? new Date().toISOString());
         return;
       }
 

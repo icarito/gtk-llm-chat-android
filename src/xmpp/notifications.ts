@@ -131,6 +131,36 @@ export function updateContactNameCache(contacts: { jid: string; name?: string }[
 }
 
 /**
+ * Retira de la barra del sistema las notificaciones push remotas (XEP-0357,
+ * entregadas por el servidor con la app cerrada) que ya son viejas cuando la
+ * app arranca. A diferencia de notifyXmppMessage/isReplay, éstas nunca pasan
+ * por el filtro local del cliente — llegan directo al SO — así que sin esto
+ * cada cold start mostraba avisos de mensajes de hace horas mezclados con los
+ * nuevos, y el usuario no podía distinguirlos.
+ *
+ * No usa REPLAY_MAX_AGE_MS (10 min, pensado para ráfagas de reconexión en
+ * vivo): acá el listón es más laxo porque el dispositivo puede llevar horas
+ * apagado/suspendido con push legítimo esperando.
+ */
+const STALE_NOTIFICATION_MAX_AGE_MS = 60 * 60 * 1000;
+
+export async function dismissStaleNotifications(): Promise<void> {
+  const presented = await Notifications.getPresentedNotificationsAsync();
+  const now = Date.now();
+  await Promise.all(
+    presented
+      .filter((notification) => {
+        const date = notification.date;
+        if (typeof date !== 'number') return false;
+        // `date` viene en milisegundos (Date.getTime() del lado Android).
+        return now - date > STALE_NOTIFICATION_MAX_AGE_MS;
+      })
+      .map((notification) =>
+        Notifications.dismissNotificationAsync(notification.request.identifier)),
+  );
+}
+
+/**
  * Retira las notificaciones ya mostradas de una conversación. Se llama cuando
  * el mensaje se resolvió en otro sitio (p.ej. una corrección XEP-0308 retira
  * una pregunta): dejar el aviso colgado llevaría a un chat que ya no tiene
