@@ -1142,14 +1142,6 @@ export default function XmppChatScreen() {
     };
   }, [decodedJid, state, refreshTick]);
 
-  const copyMessage = useCallback((body: string) => {
-    if (!body.trim()) return;
-    Clipboard.setStringAsync(body);
-    if (Platform.OS === 'android') {
-      ToastAndroid.show('Mensaje copiado', ToastAndroid.SHORT);
-    }
-  }, []);
-
   const handleRetry = useCallback((id: string) => {
     XmppService.retryMessage(decodedJid, id).catch(() => {
       if (Platform.OS === 'android') {
@@ -1226,20 +1218,6 @@ export default function XmppChatScreen() {
               )
             ) : null}
             <View style={styles.bubbleFooter}>
-              {visibleBody ? (
-                <TouchableOpacity
-                  style={styles.messageCopyButton}
-                  onPress={() => copyMessage(item.body)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Copiar mensaje completo"
-                >
-                  <Ionicons
-                    name="copy-outline"
-                    size={13}
-                    color={isMine ? 'rgba(255,255,255,0.7)' : Colors.textDim}
-                  />
-                </TouchableOpacity>
-              ) : null}
               {isStreaming && (
                 <ActivityIndicator size={12} color={Colors.primary} />
               )}
@@ -1258,7 +1236,7 @@ export default function XmppChatScreen() {
         </View>
       );
     },
-    [copyMessage, handleRetry, nowTick],
+    [handleRetry, nowTick],
   );
 
   return (
@@ -1650,18 +1628,6 @@ export default function XmppChatScreen() {
               <Ionicons name="attach" size={22} color={Colors.primary} />
             )}
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.attachBtn, state !== 'online' && styles.sendBtnDisabled]}
-            onPress={async () => {
-              const text = await Clipboard.getStringAsync();
-              if (text) {
-                setInput((prev) => prev + text);
-              }
-            }}
-            disabled={state !== 'online'}
-          >
-            <Ionicons name="clipboard-outline" size={20} color={Colors.primary} />
-          </TouchableOpacity>
           <TextInput
             style={styles.input}
             value={input}
@@ -1790,12 +1756,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 6,
-  },
-  messageCopyButton: {
-    minWidth: 28,
-    minHeight: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   bubbleStreaming: { borderWidth: 1, borderColor: Colors.primary },
   toolOutputScroll: { maxHeight: 180 },
