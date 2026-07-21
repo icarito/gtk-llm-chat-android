@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import {
   View,
   Text,
@@ -180,6 +180,53 @@ function MessageBody({ body, isMine }: { body: string; isMine: boolean }) {
         ));
       })}
     </View>
+  );
+}
+
+/**
+ * Umbral de arrastre horizontal (px) para abrir el texto seleccionable.
+ * activeOffsetX ya evita que dispare con el scroll vertical de la FlatList
+ * (mismo patrón que stickyPanGesture, para la tarjeta de aprobaciones); esto
+ * además evita que un tap con jitter mínimo la abra por accidente.
+ */
+const SWIPE_SELECT_THRESHOLD = 56;
+
+/**
+ * Envuelve la burbuja con un gesto de swipe lateral: selectable dentro de la
+ * FlatList perdía contra el scroll (Gesture.Native + shouldActivateOnStart
+ * tampoco lo resolvió sin arriesgar romper el scroll — ver AGENTS.md). En
+ * vez de pelear por el mismo touch, un gesto DISTINTO (swipe, no long-press)
+ * abre el texto en un TextInput fuera de la lista, donde la selección nativa
+ * de Android sí es confiable.
+ */
+function MessageBubble({
+  children,
+  onSwipeSelect,
+}: {
+  children: ReactNode;
+  onSwipeSelect: () => void;
+}) {
+  const translateX = useSharedValue(0);
+  const pan = useMemo(() => Gesture.Pan()
+    .activeOffsetX([-16, 16])
+    .failOffsetY([-12, 12])
+    .onUpdate((event) => {
+      translateX.value = event.translationX;
+    })
+    .onEnd((event) => {
+      if (Math.abs(event.translationX) > SWIPE_SELECT_THRESHOLD) {
+        runOnJS(onSwipeSelect)();
+      }
+      translateX.value = withSpring(0);
+    }), [onSwipeSelect, translateX]);
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value * 0.4 }],
+  }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View style={animatedStyle}>{children}</Animated.View>
+    </GestureDetector>
   );
 }
 
@@ -463,6 +510,7 @@ export default function XmppChatScreen() {
   const [loadingCommands, setLoadingCommands] = useState(false);
   const [commandBusyNode, setCommandBusyNode] = useState<string | null>(null);
   const [showPendingPopover, setShowPendingPopover] = useState(false);
+  const [selectableText, setSelectableText] = useState<string | null>(null);
   const [telemetry, setTelemetry] = useState<Record<string, unknown>>({});
   const [toolBubbles, setToolBubbles] = useState<XmppMessage[]>([]);
   const flatListRef = useRef<FlatList<XmppMessage>>(null);
@@ -498,6 +546,14 @@ export default function XmppChatScreen() {
   );
 
   // Paint the cache immediately on open, then catch up with the archive.
+  //
+  // Sólo depende de decodedJid, NO de refreshTick: éste último también sube
+  // al recuperar foco (useFocusEffect de arriba) y al reconectar, y ese
+  // disparo es para refrescar telemetría/comandos (efectos de más abajo),
+  // no para releer el historial. Si este efecto también corriera ahí, el
+  // setHistory([]) de abajo vaciaba la lista visible en cada vuelta a la
+  // pantalla — el catch-up real (mensajes nuevos llegados mientras no había
+  // foco) ya lo cubre el efecto de sync con MAM, que hace merge sin vaciar.
   useEffect(() => {
     let cancelled = false;
     let cancelIdle: (() => void) | null = null;
@@ -536,7 +592,7 @@ export default function XmppChatScreen() {
       cancelled = true;
       cancelIdle?.();
     };
-  }, [decodedJid, refreshTick]);
+  }, [decodedJid]);
 
   // Catch up when there is no cache. If cache exists, refresh MAM quietly
   // after initial render; the visible conversation is already usable.
@@ -672,6 +728,15 @@ export default function XmppChatScreen() {
     const isBusy = contact?.presence === 'dnd'
       || ['processing', 'busy'].includes(agentStatus.activity.trim().toLowerCase());
     if (!tool || !isBusy) {
+      // PEP confirma que el turno terminó: si la burbuja local seguía activa
+      // (nunca hubo una corrección XEP-0308 real que la reemplazara, p.ej. el
+      // agente respondió sin texto o la corrección se perdió), se retira acá
+      // en vez de quedar pegada indefinidamente mostrando la última
+      // herramienta usada — mismo criterio que GTK (_remove_orphaned_progress_seeds).
+      const staleId = activeToolBubbleRef.current;
+      if (staleId) {
+        setToolBubbles((items) => items.filter((item) => item.id !== staleId));
+      }
       activeToolBubbleRef.current = null;
       return;
     }
@@ -1166,77 +1231,90 @@ export default function XmppChatScreen() {
       return (
         <View style={[styles.messageRow,
           isMine ? styles.messageRowRight : styles.messageRowLeft]}>
-          {/* No envolver el contenido en Pressable: captura el long-press y
-              evita que Android abra los tiradores nativos de selección. */}
-          <View
-            style={[
-              styles.bubble,
-              isMine ? styles.bubbleRight : styles.bubbleLeft,
-              isStreaming && styles.bubbleStreaming,
-            ]}
-          >
-            {!isMine && item.type === 'groupchat' && (
-              <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
-            )}
-            {attachmentUrl ? (
-              audioUrl ? (
-                <AudioBubble url={audioUrl} duration={item.attachmentDuration} />
-              ) : isImageUrl(attachmentUrl) ? (
-                // Adjunto de imagen: preview tocable que abre el original.
-                <TouchableOpacity onPress={() => Linking.openURL(attachmentUrl)}>
-                  <Image
-                    source={{ uri: attachmentUrl }}
-                    style={styles.attachmentImage}
-                    resizeMode="contain"
-                  />
-                </TouchableOpacity>
-              ) : (
-                // Otro tipo de archivo: fila con icono + nombre, abre el link.
-                <TouchableOpacity
-                  style={styles.attachmentFile}
-                  onPress={() => Linking.openURL(attachmentUrl)}
-                >
-                  <Ionicons name="document-outline" size={18} color={Colors.primary} />
-                  <Text style={styles.attachmentFileName} numberOfLines={1}>
-                    {fileNameFromUrl(attachmentUrl)}
-                  </Text>
-                </TouchableOpacity>
-              )
-            ) : null}
-            {/* El body de un adjunto suele repetir la URL o una etiqueta genérica. */}
-            {visibleBody ? (
-              isToolActivity ? (
-                <ScrollView
-                  style={styles.toolOutputScroll}
-                  nestedScrollEnabled
-                  showsVerticalScrollIndicator
-                >
-                  <MessageBody body={visibleBody} isMine={isMine} />
-                </ScrollView>
-              ) : (
-                <MessageBody body={visibleBody} isMine={isMine} />
-              )
-            ) : null}
-            <View style={styles.bubbleFooter}>
-              {isStreaming && (
-                <ActivityIndicator size={12} color={Colors.primary} />
+          <MessageBubble onSwipeSelect={() => {
+            if (visibleBody) setSelectableText(visibleBody);
+          }}>
+            <View
+              style={[
+                styles.bubble,
+                isMine ? styles.bubbleRight : styles.bubbleLeft,
+                isStreaming && styles.bubbleStreaming,
+              ]}
+            >
+              {!isMine && item.type === 'groupchat' && (
+                <Text style={styles.senderName}>{item.from.split('/')[1] || item.from}</Text>
               )}
-              <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
-                {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                {isMine && item.sendState === 'sent' ? ' ✓' : ''}
-                {isMine && item.sendState === 'pending' ? ' …' : ''}
-              </Text>
+              {attachmentUrl ? (
+                audioUrl ? (
+                  <AudioBubble url={audioUrl} duration={item.attachmentDuration} />
+                ) : isImageUrl(attachmentUrl) ? (
+                  // Adjunto de imagen: preview tocable que abre el original.
+                  <TouchableOpacity onPress={() => Linking.openURL(attachmentUrl)}>
+                    <Image
+                      source={{ uri: attachmentUrl }}
+                      style={styles.attachmentImage}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  // Otro tipo de archivo: fila con icono + nombre, abre el link.
+                  <TouchableOpacity
+                    style={styles.attachmentFile}
+                    onPress={() => Linking.openURL(attachmentUrl)}
+                  >
+                    <Ionicons name="document-outline" size={18} color={Colors.primary} />
+                    <Text style={styles.attachmentFileName} numberOfLines={1}>
+                      {fileNameFromUrl(attachmentUrl)}
+                    </Text>
+                  </TouchableOpacity>
+                )
+              ) : null}
+              {/* El body de un adjunto suele repetir la URL o una etiqueta genérica. */}
+              {visibleBody ? (
+                isToolActivity ? (
+                  <ScrollView
+                    style={styles.toolOutputScroll}
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator
+                  >
+                    <MessageBody body={visibleBody} isMine={isMine} />
+                  </ScrollView>
+                ) : (
+                  <MessageBody body={visibleBody} isMine={isMine} />
+                )
+              ) : null}
+              <View style={styles.bubbleFooter}>
+                {isStreaming && (
+                  <ActivityIndicator size={12} color={Colors.primary} />
+                )}
+                <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
+                  {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {isMine && item.sendState === 'sent' ? ' ✓' : ''}
+                  {isMine && item.sendState === 'pending' ? ' …' : ''}
+                </Text>
+              </View>
+              {isMine && item.sendState === 'failed' && (
+                <TouchableOpacity onPress={() => handleRetry(item.id)}>
+                  <Text style={styles.sendFailedText}>⚠ No enviado — tocar para reintentar</Text>
+                </TouchableOpacity>
+              )}
             </View>
-            {isMine && item.sendState === 'failed' && (
-              <TouchableOpacity onPress={() => handleRetry(item.id)}>
-                <Text style={styles.sendFailedText}>⚠ No enviado — tocar para reintentar</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          </MessageBubble>
         </View>
       );
     },
-    [handleRetry, nowTick],
+    // nowTick NO va en las deps a propósito: recrear renderItem cada 2s
+    // (mientras hay streaming activo) hacía que FlatList remontara las
+    // celdas visibles y cancelara cualquier selección de texto en curso —
+    // exactamente el bug documentado en CLAUDE.md ("la selección de texto
+    // se desmonta con cada re-render"). Tampoco entra en `extraData` (sigue
+    // siendo solo msgCount): eso también fuerza a FlatList a repintar las
+    // celdas visibles. Costo aceptado: el borde/spinner de "streaming en
+    // curso" puede tardar hasta el próximo evento real en apagarse en vez de
+    // desvanecerse exactamente a los 6s — selección de texto confiable pesa
+    // más que esa precisión visual.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [handleRetry],
   );
 
   return (
@@ -1573,6 +1651,46 @@ export default function XmppChatScreen() {
                     </View>
                   </View>
                 ))}
+              </ScrollView>
+            </View>
+          </Pressable>
+        </Modal>
+
+        {/* Swipe lateral en una burbuja abre esto: selectable dentro de la
+            FlatList no era confiable (ver AGENTS.md), así que el texto se
+            selecciona acá, en un TextInput fuera de la lista donde Android sí
+            lo maneja bien. multiline + editable=false: de solo lectura, pero
+            un TextInput sí soporta selección/copiado nativo sin pelear con
+            el scroll de nada. */}
+        <Modal
+          visible={selectableText !== null}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setSelectableText(null)}
+        >
+          <Pressable style={styles.modalOverlay} onPress={() => setSelectableText(null)}>
+            <View style={styles.popoverContent}>
+              <View style={styles.popoverHeader}>
+                <Text style={styles.popoverTitle}>Seleccionar texto</Text>
+                <TouchableOpacity onPress={() => setSelectableText(null)}>
+                  <Ionicons name="close" size={20} color={Colors.textDim} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.selectableTextScroll}>
+                <TextInput
+                  style={styles.selectableTextInput}
+                  value={selectableText ?? ''}
+                  // editable={false} deshabilita el focus del EditText nativo
+                  // en Android, y sin focus no hay selección de texto — el
+                  // mismo tipo de trampa que ya nos mordió con Text
+                  // selectable. Se queda "editable" a nivel nativo (así el
+                  // long-press abre los tiradores) pero onChangeText
+                  // descarta cualquier intento de edición: de solo lectura
+                  // para el usuario, sin serlo para el componente nativo.
+                  onChangeText={() => {}}
+                  multiline
+                  showSoftInputOnFocus={false}
+                />
               </ScrollView>
             </View>
           </Pressable>
@@ -2125,6 +2243,15 @@ const styles = StyleSheet.create({
   },
   popoverList: {
     maxHeight: '100%',
+  },
+  selectableTextScroll: {
+    maxHeight: '100%',
+  },
+  selectableTextInput: {
+    padding: 16,
+    color: Colors.text,
+    fontSize: 15,
+    lineHeight: 21,
   },
   popoverRow: {
     padding: 12,

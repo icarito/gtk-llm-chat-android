@@ -67,10 +67,27 @@ android/
   package.json.** Paquetes que sólo publican tipos por `exports` (p.ej.
   expo-quick-actions) necesitan un shim en `src/types/<paquete>.d.ts`; Metro
   sí los resuelve en runtime.
-- **La selección de texto en burbujas se desmonta con cada re-render** de la
-  FlatList (presencia/telemetría llegan todo el tiempo). El copiado confiable
-  es el long-press de la burbuja (Clipboard + toast); `selectable` queda como
-  extra para cuando sobrevive.
+- **`selectable` en Text dentro de la FlatList de mensajes NO es confiable en
+  Android.** Se probaron y descartaron, en orden: `onLongPress={() => {}}`
+  vacío (bug de Fabric, no era la causa); sacar `nowTick` de las deps de
+  `renderMessage`/extraData (necesario pero insuficiente — el remount de
+  celdas por streaming no era la única causa); `GestureDetector` con
+  `Gesture.Native()` y luego `.shouldActivateOnStart(true)` (el scroll de la
+  FlatList seguía ganando la resolución de conflicto de todos modos). Cuatro
+  intentos, cero resultado confirmado en dispositivo — la conclusión es que
+  pelear por el mismo touch que la FlatList usa para scroll no es viable acá.
+
+  **Solución adoptada y CONFIRMADA en dispositivo real**: un gesto DISTINTO.
+  `MessageBubble` (app/xmpp-chat/[jid].tsx) envuelve cada burbuja con
+  `Gesture.Pan()` + `activeOffsetX`/`failOffsetY` (mismo patrón que
+  `stickyPanGesture`, ya probado ahí para la tarjeta de aprobaciones): un
+  swipe lateral de más de `SWIPE_SELECT_THRESHOLD` px abre un Modal con el
+  texto completo en un `TextInput` fuera de la FlatList, donde Android sí
+  selecciona de forma confiable. Ojo con `editable={false}` en ese
+  TextInput: deshabilita el focus del EditText nativo y con eso NO HAY
+  selección tampoco — se usa `onChangeText={() => {}}` +
+  `showSoftInputOnFocus={false}` en su lugar (de solo lectura para el
+  usuario sin serlo para el componente nativo).
 
 ## Verificar
 
