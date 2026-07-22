@@ -551,7 +551,7 @@ function isPendingActionExpired(action: XmppPendingAction, now = Date.now()): bo
 // request, leaving every subsequent exec blocked as “approval already pending”.
 const APPROVAL_FALLBACK_MAX_AGE_MS = 30 * 60 * 1000;
 
-function bodyLooksLikeApproval(body: string): boolean {
+export function bodyLooksLikeApproval(body: string): boolean {
   const text = body.toLowerCase();
   return text.includes('approval')
     || text.includes('aprobación')
@@ -574,6 +574,30 @@ export function actionsLookLikeApproval(
   if (labels.some((label) => words.some((word) => label.includes(word)))) return true;
   return commands.some((action) => {
     const node = action.node.toLowerCase();
+    return node.includes('approve') || node.includes('approval');
+  });
+}
+
+/**
+ * Mismo criterio que actionsLookLikeApproval, pero sobre XmppPendingAction[]
+ * (la forma ya-aplanada que usa la tarjeta "pendiente" de la pantalla de
+ * chat — label/node viven directo en cada item, no anidados en
+ * quickResponses/commands separados). Distingue "Approval required"
+ * (autorizar/denegar una acción del agente) de "Response needed" (una
+ * pregunta cualquiera) — GTK ya hace esta distinción
+ * (_actions_look_like_approval), Android la mostraba toda bajo el mismo
+ * rótulo genérico.
+ */
+export function pendingGroupLooksLikeApproval(
+  detail: string,
+  actions: Pick<XmppPendingAction, 'label' | 'node'>[],
+): boolean {
+  if (bodyLooksLikeApproval(detail)) return true;
+  const words = ['allow', 'approve', 'deny', 'reject', 'permitir', 'aprobar', 'denegar', 'rechazar'];
+  const labels = actions.map((action) => action.label.trim().toLowerCase());
+  if (labels.some((label) => words.some((word) => label.includes(word)))) return true;
+  return actions.some((action) => {
+    const node = (action.node ?? '').toLowerCase();
     return node.includes('approve') || node.includes('approval');
   });
 }

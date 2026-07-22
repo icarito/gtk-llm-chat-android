@@ -89,6 +89,50 @@ android/
   `showSoftInputOnFocus={false}` en su lugar (de solo lectura para el
   usuario sin serlo para el componente nativo).
 
+  **Efecto colateral que sí rompió algo real**: sacar `nowTick` de las deps
+  de `renderMessage` dejó su closure con el `nowTick` CONGELADO del momento
+  en que la función se creó — `isStreaming` (el borde/spinner de "burbuja en
+  curso") se calculaba siempre contra ese valor viejo, así que una burbuja
+  ya resuelta se quedaba pintada como "en curso" para siempre en vez de
+  apagarse a los 6s. Fix: `nowTickRef` (useRef sincronizado con nowTick en
+  cada render) leído dentro de `renderMessage` en vez del state directo —
+  la ref sí se lee "en vivo" sin necesitar que React recree la función. Y
+  como nada más le pedía a FlatList que repintara la celda cuando el
+  streaming termina, `streamingActive` (booleano, cambia sólo 2 veces por
+  turno) se agregó a `extraData` junto a `msgCount` — NO `nowTick` directo
+  ahí, volvería a romper la selección.
+
+- **Un `ScrollView horizontal` dentro de la FlatList de mensajes (inverted)
+  rompe la altura de la celda en Android — no es `nestedScrollEnabled`, es
+  el ScrollView en sí.** `MarkdownTableView` (app/xmpp-chat/[jid].tsx) lo
+  usaba para el scroll horizontal de tablas anchas: la burbuja ocupaba casi
+  toda la pantalla desde el primer render (no sólo al scrollear la lista).
+  Primer intento — quitar sólo `nestedScrollEnabled` — CONFIRMADO SIN
+  EFECTO en dispositivo real. La causa era el propio ScrollView. Reemplazado
+  por `Gesture.Pan()` + `Animated.View` con `translateX` (mismo patrón que
+  el swipe-para-seleccionar de MessageBubble): el ancho de la tabla se
+  calcula de las columnas (determinístico, ver `TABLE_CELL_CHROME`), y el
+  ancho del viewport se calcula de `useWindowDimensions` — NO con
+  `onLayout` en el propio contenedor, porque su único hijo (la tabla, con
+  `width` fijo) es lo que determina el tamaño natural del contenedor: medir
+  el contenedor para decidir su propio ancho es circular. El gesto de la
+  tabla se desactiva (`.enabled(maxScroll > 0)`) cuando la tabla cabe
+  entera, para no competir con el gesto de MessageBubble que la envuelve.
+  El bloque de código (ScrollView horizontal también, sin este problema)
+  no tiene el mismo bug porque NO está dentro de una FlatList — vive
+  directo en la burbuja, sin virtualización de lista de por medio.
+
+- **`maxWidth` de la burbuja tiene que vivir en el hijo DIRECTO de
+  `messageRow`, no más adentro.** `MessageBubble` (el GestureDetector +
+  Animated.View del swipe-para-seleccionar, ver arriba) se intercala entre
+  `messageRow` (flexDirection: row) y la burbuja. Si el `maxWidth: '82%'`
+  vive en la burbuja (nieta de messageRow, hija de MessageBubble), se
+  calcula contra el ancho ya encogido del wrapper — burbujas mucho más
+  angostas que su techo real. Vive en `messageBubbleWrapper` (el
+  Animated.View, hijo directo de messageRow) en su lugar; la burbuja usa
+  `alignSelf: 'flex-start'` para encogerse a su contenido dentro de ese
+  techo.
+
 ## Verificar
 
 ```

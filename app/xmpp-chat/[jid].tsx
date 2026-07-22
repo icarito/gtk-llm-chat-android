@@ -16,6 +16,7 @@ import {
   Linking,
   Alert,
   ToastAndroid,
+  useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -23,7 +24,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
-import { XmppService, findDenyAction } from '@/xmpp/XmppService';
+import { XmppService, findDenyAction, pendingGroupLooksLikeApproval } from '@/xmpp/XmppService';
 import { setActiveChatJid, dismissNotificationForJid } from '@/xmpp/notifications';
 import { displayName, presenceColor } from '@/xmpp/presence';
 import { pendingOutboundCount } from '@/xmpp/pendingCount';
@@ -36,6 +37,7 @@ import Animated, {
   useSharedValue,
   withSpring,
   runOnJS,
+  clamp,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -101,35 +103,84 @@ function splitCodeFences(content: string): MessagePart[] {
   return parts.length ? parts : [{ type: 'text', value: content }];
 }
 
+// Ancho de borde/padding por celda (borderRightWidth + paddingHorizontal*2),
+// tiene que coincidir con markdownTableCell más abajo — usado para calcular
+// el ancho total real de la tabla sin necesitar onLayout async.
+const TABLE_CELL_CHROME = 19;
+// bubble.maxWidth (82%) - bubble.paddingHorizontal*2 (24) - listContent
+// padding*2 (24) que ya se descuentan aparte via windowWidth * 0.82. Sólo
+// el padding propio de la burbuja hace falta acá.
+const BUBBLE_HORIZONTAL_PADDING = 24;
+
 function MarkdownTableView({ table, isMine }: { table: MarkdownTable; isMine: boolean }) {
   const widths = table.headers.map((header, column) => Math.min(
     260,
     Math.max(100, ...[header, ...table.rows.map((row) => row[column] ?? '')]
       .map((cell) => cell.length * 8 + 24)),
   ));
+  const tableWidth = widths.reduce((sum, w) => sum + w + TABLE_CELL_CHROME, 0);
+
+  // Un ScrollView horizontal acá medía mal su altura dentro de la FlatList
+  // (inverted) — la burbuja terminaba ocupando casi toda la pantalla desde
+  // el primer render, no sólo al scrollear (bug de Android confirmado en
+  // dispositivo, ver AGENTS.md). Mismo patrón que el swipe de selección de
+  // MessageBubble: un Gesture.Pan + Animated.View, evitando el componente
+  // que rompía el layout.
+  //
+  // viewportWidth se calcula, no se mide con onLayout: el contenedor no
+  // puede medirse a sí mismo para decidir su propio ancho cuando su único
+  // hijo (la tabla, con width: tableWidth fijo) es lo que determina su
+  // tamaño natural — sería circular. bubble.maxWidth ya es 82% del ancho de
+  // fila (ver styles.bubble/messageBubbleWrapper), así que el máximo real
+  // disponible es ese mismo 82% menos el padding propio de la burbuja.
+  const { width: windowWidth } = useWindowDimensions();
+  const viewportWidth = windowWidth * 0.82 - BUBBLE_HORIZONTAL_PADDING;
+  const translateX = useSharedValue(0);
+  const maxScroll = Math.max(0, tableWidth - viewportWidth);
+  const pan = useMemo(() => Gesture.Pan()
+    .enabled(maxScroll > 0)
+    .activeOffsetX([-10, 10])
+    .failOffsetY([-10, 10])
+    .onUpdate((event) => {
+      'worklet';
+      translateX.value = clamp(event.translationX, -maxScroll, 0);
+    })
+    // Sin onEnd: a diferencia del swipe-para-seleccionar, acá no hay una
+    // acción que disparar al soltar — el scroll se queda donde el dedo lo
+    // dejó, como cualquier ScrollView. .enabled(false) cuando la tabla
+    // cabe entera (maxScroll 0): sin esto, este gesto seguía reclamando el
+    // touch con umbral de 10px y bloqueaba el swipe-para-seleccionar de
+    // MessageBubble (umbral 16px) sobre tablas que no necesitan scroll.
+    , [maxScroll, translateX]);
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
   return (
-    <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
-      <View style={styles.markdownTable}>
-        {[table.headers, ...table.rows].map((row, rowIndex) => (
-          <View key={`row-${rowIndex}`} style={styles.markdownTableRow}>
-            {widths.map((width, column) => (
-              <Text
-                key={`cell-${column}`}
-                selectable
-                style={[
-                  styles.markdownTableCell,
-                  rowIndex === 0 && styles.markdownTableHeader,
-                  isMine && styles.messageTextMine,
-                  { width, textAlign: table.align[column] ?? 'left' },
-                ]}
-              >
-                {row[column] ?? ''}
-              </Text>
-            ))}
-          </View>
-        ))}
-      </View>
-    </ScrollView>
+    <View style={[styles.markdownTableScroll, { width: Math.min(tableWidth, viewportWidth) }]}>
+      <GestureDetector gesture={pan}>
+        <Animated.View style={[styles.markdownTable, { width: tableWidth }, animatedStyle]}>
+          {[table.headers, ...table.rows].map((row, rowIndex) => (
+            <View key={`row-${rowIndex}`} style={styles.markdownTableRow}>
+              {widths.map((width, column) => (
+                <Text
+                  key={`cell-${column}`}
+                  selectable
+                  style={[
+                    styles.markdownTableCell,
+                    rowIndex === 0 && styles.markdownTableHeader,
+                    isMine && styles.messageTextMine,
+                    { width, textAlign: table.align[column] ?? 'left' },
+                  ]}
+                >
+                  {row[column] ?? ''}
+                </Text>
+              ))}
+            </View>
+          ))}
+        </Animated.View>
+      </GestureDetector>
+    </View>
   );
 }
 
@@ -225,7 +276,14 @@ function MessageBubble({
 
   return (
     <GestureDetector gesture={pan}>
-      <Animated.View style={animatedStyle}>{children}</Animated.View>
+      {/* El maxWidth: '82%' vive ACÁ, no en la burbuja: este Animated.View
+          es el hijo directo de messageRow (flexDirection: row), así que su
+          82% se calcula contra el ancho real de la fila. Si el maxWidth
+          estuviera en la burbuja (hija de este wrapper), el 82% se
+          calcularía contra el ancho ya encogido del wrapper — el bug de las
+          burbujas angostas. `alignItems` según el lado lo pone el padre vía
+          justifyContent; acá sólo se limita el ancho. */}
+      <Animated.View style={[styles.messageBubbleWrapper, animatedStyle]}>{children}</Animated.View>
     </GestureDetector>
   );
 }
@@ -713,6 +771,15 @@ export default function XmppChatScreen() {
     );
   }, [chatPendingActions]);
   const visiblePending = pendingGroups[0] ?? null;
+  const visiblePendingIsApproval = useMemo(
+    () => (visiblePending
+      ? pendingGroupLooksLikeApproval(
+        visiblePending.detailFull ?? visiblePending.detail,
+        visiblePending.actions,
+      )
+      : false),
+    [visiblePending],
+  );
   const contact = useMemo(
     () => contacts.find((item) => item.jid === decodedJid),
     [contacts, decodedJid],
@@ -947,6 +1014,16 @@ export default function XmppChatScreen() {
   // correcciones XEP-0308 (ventana de 6s), se pinta "en curso". El tick solo
   // corre mientras haya streaming activo, para no re-renderizar en vano.
   const [nowTick, setNowTick] = useState(() => Date.now());
+  // renderMessage (más abajo) NO tiene nowTick en sus deps de useCallback a
+  // propósito — recrearlo cada 2s rompía la selección de texto (ver
+  // AGENTS.md). Pero eso significa que su closure queda con el nowTick
+  // CONGELADO del momento en que se creó: sin esta ref, isStreaming se
+  // calculaba siempre contra ese valor viejo y una burbuja resuelta hace
+  // rato se quedaba pintada como "en curso" para siempre, en vez de
+  // apagarse a los 6s. La ref sí se lee "en vivo" dentro del closure porque
+  // .current es mutable — no depende de que React vuelva a crear la función.
+  const nowTickRef = useRef(nowTick);
+  nowTickRef.current = nowTick;
   const streamingActive = useMemo(
     () => sortedMsgs.some(
       (m) => m.correctedAtMs !== undefined && nowTick - m.correctedAtMs < STREAMING_WINDOW_MS,
@@ -1222,7 +1299,7 @@ export default function XmppChatScreen() {
       const visibleBody = contentWithoutAttachmentUrl(item.body, attachmentUrl);
       const isStreaming = !isMine
         && item.correctedAtMs !== undefined
-        && nowTick - item.correctedAtMs < STREAMING_WINDOW_MS;
+        && nowTickRef.current - item.correctedAtMs < STREAMING_WINDOW_MS;
       const audioUrl = isAudioUrl(attachmentUrl) ? attachmentUrl
         : isAudioUrl(item.body) ? item.body.match(URL_RE)?.[0]?.replace(TRAILING_URL_PUNCT_RE, '') || null
           : null;
@@ -1376,7 +1453,13 @@ export default function XmppChatScreen() {
               numberOfLines={1}
             >
               {awaitingReply
-                ? `${pendingCount} ${pendingCount === 1 ? 'mensaje' : 'mensajes'} por procesar`
+                // "Por procesar" no aclaraba quién procesa qué — esto es
+                // "le mandaste esto y el agente todavía no contestó", no
+                // sobre entrega XMPP ni sobre acciones tuyas pendientes
+                // (eso es la tarjeta de más abajo, un concepto distinto).
+                ? (pendingCount === 1
+                  ? 'Esperando respuesta del agente'
+                  : `Esperando respuesta del agente (${pendingCount} mensajes)`)
                 : formatAgentActivity(agentStatus.activity)}
             </Text>
             {modelBadge && (
@@ -1480,7 +1563,15 @@ export default function XmppChatScreen() {
           keyExtractor={(item, index) => `${item.id}-${index}`}
           renderItem={renderMessage}
           contentContainerStyle={styles.listContent}
-          extraData={msgCount}
+          // streamingActive (booleano, cambia sólo 2 veces por turno: al
+          // empezar y al terminar) fuerza a FlatList a repintar las celdas
+          // visibles justo cuando el streaming termina — sin esto, la última
+          // burbuja quedaba marcada "en curso" para siempre: nowTickRef ya
+          // tenía el valor correcto, pero nada le pedía a FlatList que
+          // volviera a invocar renderItem para leerlo. NO usar nowTick
+          // directo acá (cambia cada 2s): repintaría todas las celdas
+          // visibles en cada tick, mismo bug que ya rompía la selección.
+          extraData={[msgCount, streamingActive]}
           onScroll={handleListScroll}
           scrollEventThrottle={32}
           // Inverted: the "end" of the list is the TOP of the screen, i.e. the
@@ -1529,13 +1620,23 @@ export default function XmppChatScreen() {
 
         {visiblePending && (
           <GestureDetector gesture={stickyPanGesture}>
-          <Animated.View style={[styles.pendingCard, stickyAnimatedStyle]}>
+          <Animated.View style={[
+            styles.pendingCard,
+            visiblePendingIsApproval && styles.pendingCardApproval,
+            stickyAnimatedStyle,
+          ]}>
             <View style={styles.stickyGrabber} />
             <View style={styles.pendingHeader}>
+              {visiblePendingIsApproval && (
+                <Ionicons name="shield-checkmark-outline" size={16} color={Colors.warning} />
+              )}
               <Text style={styles.pendingTitle}>
-                {pendingGroups.length > 1
-                  ? `Response needed (${pendingGroups.length})`
-                  : 'Response needed'}
+                {/* "Se requiere aprobación" (autorizar/denegar una acción del
+                    agente) vs "Respuesta pendiente" (una pregunta cualquiera)
+                    — mismo criterio que GTK (_actions_look_like_approval),
+                    antes colapsado bajo el mismo rótulo genérico acá. */}
+                {visiblePendingIsApproval ? 'Se requiere aprobación' : 'Respuesta pendiente'}
+                {pendingGroups.length > 1 ? ` (${pendingGroups.length})` : ''}
               </Text>
               <View style={styles.pendingHeaderRight}>
                 <Text style={styles.pendingTime}>
@@ -1797,7 +1898,13 @@ const styles = StyleSheet.create({
   messageRow: { flexDirection: 'row', marginBottom: 10 },
   messageRowLeft: { justifyContent: 'flex-start' },
   messageRowRight: { justifyContent: 'flex-end' },
-  bubble: { maxWidth: '82%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
+  // El maxWidth vive en el wrapper (hijo directo de messageRow), no en la
+  // burbuja: sólo así el 82% se mide contra el ancho de la fila y no contra
+  // el del wrapper ya encogido. Ver el comentario en MessageBubble.
+  messageBubbleWrapper: { maxWidth: '82%' },
+  // alignSelf flex-start: la burbuja se encoge a su contenido (un "ok" no
+  // ocupa el 82% entero) pero puede crecer hasta el maxWidth del wrapper.
+  bubble: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
   bubbleLeft: {
     backgroundColor: Colors.assistantBubble,
     borderWidth: 1,
@@ -1809,6 +1916,10 @@ const styles = StyleSheet.create({
   messageBody: { gap: 6 },
   messageText: { fontSize: 15, color: Colors.text, lineHeight: 21 },
   messageTextMine: { color: Colors.userBubbleText },
+  // overflow hidden: es el "viewport" del scroll manual (Gesture.Pan en
+  // MarkdownTableView) — sin esto, arrastrar la tabla la desbordaría fuera
+  // de la burbuja en vez de recortarse en su borde.
+  markdownTableScroll: { alignSelf: 'flex-start', maxWidth: '100%', overflow: 'hidden' },
   markdownTable: {
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
@@ -1950,6 +2061,12 @@ const styles = StyleSheet.create({
     marginHorizontal: 6,
     marginTop: 6,
     gap: 8,
+  },
+  // Autorizar/denegar una acción del agente pesa distinto que una pregunta
+  // cualquiera — el borde de acento es la única diferencia visual con
+  // pendingCard, el ícono y el texto del título ya distinguen el resto.
+  pendingCardApproval: {
+    borderColor: Colors.warning,
   },
   // Asa visual: sin ella el gesto de arrastrar no se descubre.
   stickyGrabber: {
