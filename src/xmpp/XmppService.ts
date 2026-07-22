@@ -29,6 +29,7 @@ import { PushStatus } from '@/xmpp/pushStatus';
 import { updateContactShortcuts } from '@/xmpp/shortcuts';
 import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
+import { Omemo } from '@/xmpp/xep-0384';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { buildFormElement } from '@/xmpp/xep-0004';
 import { buildCommandExecuteStanza, extractApprovalSummary, markdownToPlain } from '@/xmpp/outbound-render';
@@ -54,6 +55,44 @@ function isGroupConversation(bareJid: string): boolean {
   const messages = messagesMap.get(bareJid);
   if (!messages) return false;
   return messages.some((m) => m.type === 'groupchat' || m.isGroup);
+}
+
+async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string) {
+  const encryptedNode = stanza.getChild('encrypted', 'eu.siacs.conversations.axolotl')
+    || stanza.getChild('encrypted', 'urn:xmpp:omemo:2');
+  if (!encryptedNode || !Omemo.isEnabled()) {
+    return { decryptedBody: null, wasEncrypted: false };
+  }
+
+  try {
+    const decryptedText = await Omemo.decryptMessage(fromJid, encryptedNode);
+    if (!decryptedText) {
+      return { decryptedBody: null, wasEncrypted: false };
+    }
+
+    try {
+      const parsed = JSON.parse(decryptedText);
+      if (parsed && typeof parsed === 'object' && parsed.body !== undefined) {
+        return {
+          decryptedBody: parsed.body,
+          wasEncrypted: true,
+          decryptedMetadata: {
+            quickResponses: parsed.quickResponses,
+            commands: parsed.commands,
+            replyTo: parsed.replyTo,
+            oobUrl: parsed.oobUrl,
+          }
+        };
+      }
+    } catch {
+      // Not a JSON string, just raw text body
+    }
+
+    return { decryptedBody: decryptedText, wasEncrypted: true };
+  } catch (e) {
+    console.error('[OMEMO] Failed to decrypt inbound message from', fromJid, e);
+    return { decryptedBody: '🔒 [Error al desencriptar mensaje OMEMO]', wasEncrypted: true };
+  }
 }
 
 function parseCaps(stanza: Element): string | null {
@@ -165,6 +204,14 @@ const CAPS_FEATURES = [
   `${AVATAR_METADATA_NODE}+notify`,
   CHAT_STATES_NS,
 ];
+
+function getActiveCapsFeatures(): string[] {
+  const features = [...CAPS_FEATURES];
+  if (Omemo.isEnabled()) {
+    features.push('eu.siacs.conversations.axolotl+notify');
+  }
+  return features;
+}
 const pushLog = globalThis.console;
 
 function normalizeButtonStyle(raw: unknown): XmppButtonStyle | undefined {
@@ -1644,7 +1691,7 @@ export const XmppService = {
     // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
     // los features nuevos no se anunciarían y no llegarían los avatares.
     // v4: + chatstates (XEP-0085).
-    const capsHash = 'v4-telemetry-avatar-chatstates';
+    const capsHash = config.omemoEnabled ? 'v5-telemetry-avatar-chatstates-omemo' : 'v4-telemetry-avatar-chatstates';
     const capsNode = CAPS_NODE;
 
     xmppClient.on('online', () => {
@@ -1653,6 +1700,20 @@ export const XmppService = {
       stopRetry();
       setConnected();
       ForegroundService.start(config.jid).catch(() => {});
+
+      // Initialize OMEMO!
+      if (config.omemoEnabled) {
+        Omemo.init(config.jid, xmppClient, true)
+          .then(async () => {
+            await Omemo.publishDeviceList();
+            await Omemo.publishBundle();
+          })
+          .catch((err) => {
+            console.error('[OMEMO] Failed to initialize OMEMO on online', err);
+          });
+      } else {
+        Omemo.init(config.jid, xmppClient, false).catch(() => {});
+      }
 
       // XEP-0280 Carbons — usar iqCaller para asegurar delivery y tener id
       xmppClient?.iqCaller.request(
@@ -1752,7 +1813,7 @@ export const XmppService = {
                 'query',
                 { xmlns: DISCO_INFO_NS, ...(node ? { node } : {}) },
                 xml('identity', { category: 'client', type: 'phone', name: 'gtk-llm-chat-android' }),
-                ...CAPS_FEATURES.map((feature) => xml('feature', { var: feature })),
+                ...getActiveCapsFeatures().map((feature) => xml('feature', { var: feature })),
               ),
             ),
           ).catch(() => {});
@@ -1766,6 +1827,18 @@ export const XmppService = {
         const from = stanza.attrs.from as string | undefined;
         if (!from) return;
         const bare = bareJid(from);
+
+        // MUC Occupant Real JID tracking for OMEMO group chats
+        const mucUser = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
+        const mucItem = mucUser?.getChild('item');
+        const realJid = mucItem?.attrs.jid as string | undefined;
+        if (realJid) {
+          if (ptype === 'unavailable') {
+            Omemo.removeMucOccupant(bare, realJid);
+          } else {
+            Omemo.registerMucOccupant(bare, realJid);
+          }
+        }
 
         if (ptype === 'subscribe') {
           xmppClient!.send(xml('presence', { to: bare, type: 'subscribed' }));
@@ -1832,6 +1905,20 @@ export const XmppService = {
           }
           return;
         }
+        if (node === 'eu.siacs.conversations.axolotl.devicelist') {
+          const from = stanza.attrs.from as string | undefined;
+          if (!from) return;
+          const bare = bareJid(from);
+          const listNode = items?.getChild('item')?.getChild('list', 'eu.siacs.conversations.axolotl');
+          if (listNode) {
+            const devices = listNode
+              .getChildren('device')
+              .map((d: Element) => parseInt(d.attrs.id as string, 10))
+              .filter((id: number) => !isNaN(id));
+            Omemo.handleDeviceListUpdate(bare, devices);
+          }
+          return;
+        }
         if (node === AVATAR_METADATA_NODE) {
           const from = stanza.attrs.from as string | undefined;
           if (!from) return;
@@ -1864,8 +1951,69 @@ export const XmppService = {
         const queryid = (mamResult.attrs.queryid as string) || '';
         const buffer = pendingMamQueries.get(queryid);
         if (!buffer) return;
+
+        const forwarded = mamResult.getChild('forwarded', 'urn:xmpp:forward:0');
+        const message = forwarded?.getChild('message');
+        if (message) {
+          const fromAttr = (message.attrs.from as string) || '';
+          const fromBare = bareJid(fromAttr);
+          const ownBare = bareJid(config.jid);
+          const direction = fromBare === ownBare ? 'out' : 'in';
+          const senderJid = direction === 'out' ? ownBare : fromBare;
+
+          const { decryptedBody, wasEncrypted, decryptedMetadata } = await decryptStanzaIfEncrypted(message, senderJid);
+          if (wasEncrypted && decryptedBody) {
+            const encryptedNode = message.getChild('encrypted', 'eu.siacs.conversations.axolotl')
+              || message.getChild('encrypted', 'urn:xmpp:omemo:2');
+            if (encryptedNode) {
+              const idx = message.children.indexOf(encryptedNode);
+              if (idx !== -1) message.children.splice(idx, 1);
+            }
+            message.children.push(xml('body', {}, decryptedBody));
+
+            if (decryptedMetadata) {
+              if (decryptedMetadata.quickResponses) {
+                for (const qr of decryptedMetadata.quickResponses) {
+                  message.children.push(xml('response', {
+                    xmlns: QUICK_RESPONSE_NS,
+                    label: qr.label,
+                    value: qr.value,
+                    ...(qr.style ? { style: qr.style } : {}),
+                    ...(qr.expiresAtMs ? { 'expires-at-ms': String(qr.expiresAtMs) } : {}),
+                  }));
+                }
+              }
+              if (decryptedMetadata.commands) {
+                for (const cmd of decryptedMetadata.commands) {
+                  message.children.push(xml('command-item', {
+                    xmlns: 'urn:xmpp:oc:approval:0',
+                    jid: cmd.jid,
+                    node: cmd.node,
+                    name: cmd.name,
+                    ...(cmd.style ? { style: cmd.style } : {}),
+                    ...(cmd.expiresAtMs ? { 'expires-at-ms': String(cmd.expiresAtMs) } : {}),
+                  }));
+                }
+              }
+            }
+          }
+        }
+
         const parsed = parseMamResult(mamResult, config.jid, botNick);
-        if (parsed) buffer.push(parsed);
+        if (parsed) {
+          const forwarded = mamResult.getChild('forwarded', 'urn:xmpp:forward:0');
+          const message = forwarded?.getChild('message');
+          const encryptedNode = message?.getChild('encrypted', 'eu.siacs.conversations.axolotl')
+            || message?.getChild('encrypted', 'urn:xmpp:omemo:2');
+          const rawBody = message?.getChildText('body');
+          const hasError = rawBody?.includes('Error al desencriptar');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const wasEncrypted = !!encryptedNode || (rawBody !== null && rawBody !== undefined && !hasError && message?.children.some((c: any) => (c as any).name === 'body'));
+          if (wasEncrypted) {
+            parsed.wasEncrypted = true;
+          }
+          buffer.push(parsed);
+        }
         return;
       }
 
@@ -1885,10 +2033,19 @@ export const XmppService = {
         const msgCandidates = forwarded?.getChildren('message') ?? [];
         const message = msgCandidates[0];
         if (message) {
-          const carbonBody = bodyWithOob(message, message.getChildText('body') || '');
+          const fromAttr = (message.attrs.from as string) || '';
+          const toAttr = (message.attrs.to as string) || '';
+          const fromBare = bareJid(fromAttr);
+          const toBare = bareJid(toAttr);
+          const direction: 'in' | 'out' = isCarbonReceived ? 'in' : 'out';
+          const partnerJid = direction === 'out' ? toBare : fromBare;
+          const senderJid = direction === 'out' ? config.jid : fromAttr;
+
+          const { decryptedBody, wasEncrypted, decryptedMetadata } = await decryptStanzaIfEncrypted(message, senderJid);
+          const rawBodyText = wasEncrypted ? (decryptedBody || '') : (message.getChildText('body') || '');
+          const carbonBody = bodyWithOob(message, rawBodyText);
+
           if (carbonBody) {
-            const fromAttr = (message.attrs.from as string) || '';
-            const toAttr = (message.attrs.to as string) || '';
             // A queued carbon normally carries XEP-0203 <delay/> on the outer
             // wrapper/forwarded node, not necessarily on the inner message.
             const delayTs = extractDelayStamp(message)
@@ -1896,10 +2053,6 @@ export const XmppService = {
               ?? extractDelayStamp(stanza)
               ?? new Date().toISOString();
 
-            const fromBare = bareJid(fromAttr);
-            const toBare = bareJid(toAttr);
-            const direction: 'in' | 'out' = isCarbonReceived ? 'in' : 'out';
-            const partnerJid = direction === 'out' ? toBare : fromBare;
             const msgId = (message.attrs.id as string) || `carbon-${Date.now()}`;
 
             if (seenIds.has(msgId)) return;
@@ -1915,6 +2068,11 @@ export const XmppService = {
             }
 
             const actions = parseActionMetadata(message);
+            const quickResponses = decryptedMetadata?.quickResponses || actions.quickResponses;
+            const commands = decryptedMetadata?.commands || actions.commands;
+            const replyTo = decryptedMetadata?.replyTo || extractReply(message);
+            const oobUrl = decryptedMetadata?.oobUrl || extractOobUrl(message, carbonBody);
+
             const carbonMsg: XmppMessage = {
               id: msgId,
               from: fromBare,
@@ -1924,10 +2082,11 @@ export const XmppService = {
               timestamp: delayTs,
               direction,
               isGroup: false,
-              quickResponses: actions.quickResponses,
-              commands: actions.commands,
-              replyTo: extractReply(message),
-              oobUrl: extractOobUrl(message, carbonBody),
+              quickResponses,
+              commands,
+              replyTo,
+              oobUrl,
+              wasEncrypted,
             };
 
             const wasCached = direction === 'in'
@@ -1960,9 +2119,25 @@ export const XmppService = {
       const type = stanza.attrs.type;
       if (type !== 'chat' && type !== 'groupchat') return;
 
-      const body = bodyWithOob(stanza, stanza.getChildText('body') || '');
       const from = stanza.attrs.from as string | undefined;
       if (!from) return;
+
+      const { decryptedBody, wasEncrypted, decryptedMetadata } = await decryptStanzaIfEncrypted(stanza, from);
+      const rawBodyText = wasEncrypted ? (decryptedBody || '') : (stanza.getChildText('body') || '');
+      const body = bodyWithOob(stanza, rawBodyText);
+
+      // If the decrypted key was a pre-key, send an empty response to complete handshake!
+      if (wasEncrypted && decryptedBody) {
+        const encryptedNode = stanza.getChild('encrypted', 'eu.siacs.conversations.axolotl')
+          || stanza.getChild('encrypted', 'urn:xmpp:omemo:2');
+        const header = encryptedNode?.getChild('header');
+        const keys = header?.getChildren('key');
+        const myKeyNode = keys?.find((k: Element) => parseInt(k.attrs.rid, 10) === Omemo.getDeviceId());
+        const isPrekey = myKeyNode?.attrs.prekey === 'true' || myKeyNode?.attrs.kex === 'true';
+        if (isPrekey) {
+          XmppService.sendMessage(bareJid(from), '', 'chat').catch(() => {});
+        }
+      }
 
       // XEP-0085: los estados viajan en mensajes sin cuerpo (o junto a uno).
       // Un cuerpo real implica que el contacto dejó de "escribir".
@@ -2000,7 +2175,12 @@ export const XmppService = {
 
       const isGroup = type === 'groupchat' || isGroupJidEx(platformId, undefined);
       const isMention = !isGroup || messageMentionsBot(stanza, body, botNick, config.jid);
-      const { quickResponses, commands } = parseActionMetadata(stanza);
+
+      const actions = parseActionMetadata(stanza);
+      const quickResponses = decryptedMetadata?.quickResponses || actions.quickResponses;
+      const commands = decryptedMetadata?.commands || actions.commands;
+      const replyTo = decryptedMetadata?.replyTo || extractReply(stanza);
+      const oobUrl = decryptedMetadata?.oobUrl || extractOobUrl(stanza, body);
 
       const msg: XmppMessage = {
         id: (stanza.attrs.id as string) || `${Date.now()}`,
@@ -2014,8 +2194,9 @@ export const XmppService = {
         isGroup,
         quickResponses,
         commands,
-        replyTo: extractReply(stanza),
-        oobUrl: extractOobUrl(stanza, body),
+        replyTo,
+        oobUrl,
+        wasEncrypted,
       };
 
       if (seenIds.has(msg.id)) return;
@@ -2140,19 +2321,47 @@ export const XmppService = {
     }
     const id = `nc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const timestamp = new Date().toISOString();
-    // Add outgoing message to map immediately
-    addMessageToMap({
-      id,
-      from: accountConfig?.jid ?? '',
-      to,
-      type,
-      body,
-      timestamp,
-      direction: 'out',
-      isGroup: type === 'groupchat',
-      sendState: 'pending',
-    });
+
+    // Check if empty body response for handshake
+    const isHandshake = body === '';
+
+    // Add outgoing message to map immediately unless it's an empty handshake message
+    if (!isHandshake) {
+      addMessageToMap({
+        id,
+        from: accountConfig?.jid ?? '',
+        to,
+        type,
+        body,
+        timestamp,
+        direction: 'out',
+        isGroup: type === 'groupchat',
+        sendState: 'pending',
+      });
+    }
+
     try {
+      if (accountConfig?.omemoEnabled && Omemo.isEnabled()) {
+        const isGroup = type === 'groupchat';
+        const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, body, isGroup);
+        if (wasEncrypted && encryptedXml) {
+          await xmppClient.send(xml(
+            'message',
+            { type, to, id },
+            encryptedXml,
+            // XEP-0085: un mensaje con cuerpo implica estado active.
+            xml('active', { xmlns: CHAT_STATES_NS }),
+          ));
+          if (!isHandshake) {
+            updateOutboundSendState(to, id, 'sent');
+          }
+          if (!isHandshake) {
+            XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
+          }
+          return id;
+        }
+      }
+
       await xmppClient.send(xml(
         'message',
         { type, to, id },
@@ -2160,13 +2369,19 @@ export const XmppService = {
         // XEP-0085: un mensaje con cuerpo implica estado active.
         xml('active', { xmlns: CHAT_STATES_NS }),
       ));
-      updateOutboundSendState(to, id, 'sent');
+      if (!isHandshake) {
+        updateOutboundSendState(to, id, 'sent');
+      }
     } catch (error) {
-      updateOutboundSendState(to, id, 'failed');
+      if (!isHandshake) {
+        updateOutboundSendState(to, id, 'failed');
+      }
       throw error;
     }
-    // Cached with no mam_id; the archive copy will be matched onto this row.
-    XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
+    if (!isHandshake) {
+      // Cached with no mam_id; the archive copy will be matched onto this row.
+      XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
+    }
     return id;
   },
 
@@ -2200,6 +2415,37 @@ export const XmppService = {
 
     const id = `oc-${Date.now().toString(36)}`;
     const timestamp = new Date().toISOString();
+
+    if (accountConfig?.omemoEnabled && Omemo.isEnabled()) {
+      const isGroup = type === 'groupchat';
+      const richPlaintext = JSON.stringify({ body: slot.getUrl, oobUrl: slot.getUrl });
+      const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, richPlaintext, isGroup);
+      if (wasEncrypted && encryptedXml) {
+        await xmppClient.send(
+          xml(
+            'message',
+            { type, to, id },
+            encryptedXml,
+          ),
+        );
+        addMessageToMap({
+          id,
+          from: accountConfig?.jid ?? '',
+          to,
+          type,
+          body: slot.getUrl,
+          timestamp,
+          direction: 'out',
+          isGroup: type === 'groupchat',
+          oobUrl: slot.getUrl,
+          wasEncrypted: true,
+        });
+        XmppHistory.recordMessage(to, slot.getUrl, 'out', timestamp, null, null, null, null, slot.getUrl)
+          .catch(() => {});
+        return slot.getUrl;
+      }
+    }
+
     await xmppClient.send(
       xml(
         'message',

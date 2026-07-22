@@ -3,6 +3,7 @@ export interface XmppAccountConfig {
   password: string;
   service: string;
   resource: string;
+  omemoEnabled?: boolean;
 }
 
 export type XmppConnectionState =
@@ -51,6 +52,7 @@ export interface XmppMessage {
   /** Solo salientes: pending hasta que el socket acepta, failed si el envío
    *  lanzó — la UI ofrece reintentar. */
   sendState?: 'pending' | 'sent' | 'failed';
+  wasEncrypted?: boolean;
 }
 
 /** Button color hint (paridad con Telegram / GTK). */
