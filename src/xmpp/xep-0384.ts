@@ -474,23 +474,31 @@ class OmemoService {
       recipientJids.push(this.activeJid);
     }
 
-    // 1. Gather all devices and ensure session exists for each
-    const devicesToEncrypt: Array<{ jid: string; deviceId: number }> = [];
-
-    for (const jid of recipientJids) {
+    // 1. Gather all devices and ensure session exists for each (in parallel for high performance)
+    const jidToDeviceList = new Map<string, number[]>();
+    await Promise.all(recipientJids.map(async (jid) => {
       const devList = await this.fetchDeviceList(jid);
+      jidToDeviceList.set(jid, devList);
+    }));
+
+    const candidates: Array<{ jid: string; deviceId: number }> = [];
+    for (const jid of recipientJids) {
+      const devList = jidToDeviceList.get(jid) || [];
       for (const devId of devList) {
-        // Skip ourselves if it's our own device ID
         if (jid === this.activeJid && devId === this.deviceId) {
           continue;
         }
-
-        const ok = await this.getOrCreateSession(jid, devId);
-        if (ok) {
-          devicesToEncrypt.push({ jid, deviceId: devId });
-        }
+        candidates.push({ jid, deviceId: devId });
       }
     }
+
+    const devicesToEncrypt: Array<{ jid: string; deviceId: number }> = [];
+    await Promise.all(candidates.map(async (cand) => {
+      const ok = await this.getOrCreateSession(cand.jid, cand.deviceId);
+      if (ok) {
+        devicesToEncrypt.push(cand);
+      }
+    }));
 
     if (devicesToEncrypt.length === 0) {
       // eslint-disable-next-line no-console

@@ -32,10 +32,13 @@ const mockNativeModule = {
   decrypt: jest.fn().mockResolvedValue('key_b64'),
   serialize: jest.fn().mockResolvedValue('{"localRegistrationId":12345,"sessions":{}}'),
   deserialize: jest.fn().mockResolvedValue(true),
-  aesGcmEncrypt: jest.fn().mockResolvedValue({
-    key: 'key_b64',
-    iv: 'iv_b64',
-    payload: 'payload_b64',
+  aesGcmEncrypt: jest.fn().mockImplementation((plaintext) => {
+    const randomHex = () => Math.random().toString(36).slice(2, 10);
+    return Promise.resolve({
+      key: `mock_key_${randomHex()}`,
+      iv: `mock_iv_${randomHex()}`,
+      payload: `payload_for_${plaintext}`,
+    });
   }),
   aesGcmDecrypt: jest.fn().mockResolvedValue('Hello OMEMO!'),
 };
@@ -153,6 +156,16 @@ describe('OMEMO XEP-0384 Encryption & Decryption', () => {
     expect(mockNativeModule.encrypt).toHaveBeenCalled();
   });
 
+  it('generates unique random cryptographic key and IV for consecutive encryptions', async () => {
+    await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
+
+    const enc1 = await NativeModules.XmppOmemoModule.aesGcmEncrypt('Hello');
+    const enc2 = await NativeModules.XmppOmemoModule.aesGcmEncrypt('Hello');
+
+    expect(enc1.key).not.toBe(enc2.key);
+    expect(enc1.iv).not.toBe(enc2.iv);
+  });
+
   it('decrypts encrypted messages', async () => {
     await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
 
@@ -179,5 +192,36 @@ describe('OMEMO XEP-0384 Encryption & Decryption', () => {
       { type: 3, body: 'encrypted_key' }
     );
     expect(mockNativeModule.aesGcmDecrypt).toHaveBeenCalledWith('key_b64', 'iv_b64', 'payload_b64');
+  });
+
+  it('decrypts encrypted messages in OMEMO 2.0 format (urn:xmpp:omemo:2)', async () => {
+    await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
+
+    const encryptedXml = xml('encrypted', { xmlns: 'urn:xmpp:omemo:2' },
+      xml('header', { sid: '789' },
+        xml('key', { rid: String(Omemo.getDeviceId()) }, 'encrypted_key_v2'),
+        xml('iv', {}, 'iv_b64_v2')
+      ),
+      xml('payload', {}, 'payload_b64_v2')
+    );
+
+    // Mock session retrieval/creation
+    mockNativeModule.serialize.mockResolvedValue(JSON.stringify({
+      sessions: {
+        'contact@fuentelibre.org:789': 'session_data',
+      },
+    }));
+
+    mockNativeModule.decrypt.mockResolvedValueOnce('key_b64_v2');
+    mockNativeModule.aesGcmDecrypt.mockResolvedValueOnce('Hello OMEMO 2.0!');
+
+    const plaintext = await Omemo.decryptMessage('contact@fuentelibre.org', encryptedXml);
+
+    expect(plaintext).toBe('Hello OMEMO 2.0!');
+    expect(mockNativeModule.decrypt).toHaveBeenCalledWith(
+      'contact@fuentelibre.org:789',
+      { type: 2, body: 'encrypted_key_v2' }
+    );
+    expect(mockNativeModule.aesGcmDecrypt).toHaveBeenCalledWith('key_b64_v2', 'iv_b64_v2', 'payload_b64_v2');
   });
 });

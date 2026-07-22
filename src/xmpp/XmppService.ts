@@ -1691,6 +1691,11 @@ export const XmppService = {
     // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
     // los features nuevos no se anunciarían y no llegarían los avatares.
     // v4: + chatstates (XEP-0085).
+    // BUMP A v5 SI OMEMO ESTÁ ENABLED: Es intencional cambiar el hash de 'v4-telemetry-avatar-chatstates'
+    // a 'v5-telemetry-avatar-chatstates-omemo' cuando OMEMO está habilitado para forzar al servidor y a
+    // otros contactos conectados (incluido el componente OpenClaw) a invalidar su caché de nuestras
+    // capacidades (disco#info XEP-0115). Esto asegura que re-consulten nuestras capabilities y detecten
+    // correctamente nuestro soporte para eu.siacs.conversations.axolotl+notify de inmediato.
     const capsHash = config.omemoEnabled ? 'v5-telemetry-avatar-chatstates-omemo' : 'v4-telemetry-avatar-chatstates';
     const capsNode = CAPS_NODE;
 
