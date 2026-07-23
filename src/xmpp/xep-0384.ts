@@ -5,6 +5,28 @@ import * as SecureStore from 'expo-secure-store';
 
 const getXmppOmemoModule = () => NativeModules.XmppOmemoModule;
 
+// XEP-0060 §7.1.5 publish-options form. Without this, the node is created
+// with whatever access model the server defaults to (Prosody's mod_pep
+// defaults to presence-subscription-gated, not open) — a bundle or device
+// list published without it may be unreadable by contacts whose presence
+// subscription isn't in the exact state the server expects, breaking
+// interop with standard clients (Gajim, Dino) the same way a malformed
+// bundle would.
+function publishOptionsForm(maxItems: number): Element {
+  return xml('publish-options', {},
+    xml('x', { xmlns: 'jabber:x:data', type: 'submit' },
+      xml('field', { var: 'FORM_TYPE', type: 'hidden' },
+        xml('value', {}, 'http://jabber.org/protocol/pubsub#publish-options')),
+      xml('field', { var: 'pubsub#persist_items' },
+        xml('value', {}, 'true')),
+      xml('field', { var: 'pubsub#access_model' },
+        xml('value', {}, 'open')),
+      xml('field', { var: 'pubsub#max_items' },
+        xml('value', {}, String(maxItems))),
+    ),
+  );
+}
+
 export interface OmemoPreKey {
   id: number;
   publicKey: string; // base64
@@ -105,6 +127,82 @@ class OmemoService {
 
   private bareJid(jid: string): string {
     return jid.split('/')[0];
+  }
+
+  /**
+   * Publishes an item to a PEP node with the standard OMEMO node options
+   * (persist_items, access_model=open, max_items), reconfiguring the node
+   * if it already exists with different options.
+   *
+   * XEP-0060 §7.1.5: publish-options only applies when it exactly matches
+   * the node's current config, or when the node doesn't exist yet — a node
+   * created before this fix (or by another client) fails with `conflict`
+   * otherwise. Following the pattern nbxmpp uses on the GTK side: on that
+   * specific error, fetch+patch the node's real config (§8.2) and retry the
+   * plain publish, instead of looping publish-options retries forever.
+   */
+  private async publishToNode(node: string, item: Element, maxItems: number): Promise<void> {
+    try {
+      await this.xmppClient.iqCaller.request(
+        xml('iq', { type: 'set' },
+          xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
+            xml('publish', { node }, item),
+            publishOptionsForm(maxItems),
+          ),
+        ),
+        15000,
+      );
+    } catch (err) {
+      const isAccessModelConflict = err instanceof Error
+        && /conflict/i.test(err.message) && /access_model/i.test(err.message);
+      if (!isAccessModelConflict) throw err;
+      // eslint-disable-next-line no-console
+      console.warn(`[OMEMO] Node ${node} has a different access_model, reconfiguring it`);
+      await this.reconfigureNodeAccessModel(node, maxItems);
+      await this.xmppClient.iqCaller.request(
+        xml('iq', { type: 'set' },
+          xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
+            xml('publish', { node }, item),
+          ),
+        ),
+        15000,
+      );
+    }
+  }
+
+  private async reconfigureNodeAccessModel(node: string, maxItems: number): Promise<void> {
+    const result = await this.xmppClient.iqCaller.request(
+      xml('iq', { type: 'get' },
+        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub#owner' },
+          xml('configure', { node })),
+      ),
+      15000,
+    );
+    const form = result
+      .getChild('pubsub', 'http://jabber.org/protocol/pubsub#owner')
+      ?.getChild('configure')
+      ?.getChild('x', 'jabber:x:data');
+    if (!form) throw new Error(`No config form returned for node ${node}`);
+
+    const desired: Record<string, string> = {
+      'pubsub#persist_items': 'true',
+      'pubsub#access_model': 'open',
+      'pubsub#max_items': String(maxItems),
+    };
+    for (const field of form.getChildren('field') as Element[]) {
+      const varName = field.attrs.var as string | undefined;
+      if (!varName || !(varName in desired)) continue;
+      field.children = [xml('value', {}, desired[varName])];
+    }
+    form.attrs.type = 'submit';
+
+    await this.xmppClient.iqCaller.request(
+      xml('iq', { type: 'set' },
+        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub#owner' },
+          xml('configure', { node }, form)),
+      ),
+      15000,
+    );
   }
 
   private stateKey(jid: string): string {
@@ -450,19 +548,14 @@ class OmemoService {
       currentDevices.push(this.deviceId);
     }
 
-    await this.xmppClient.iqCaller.request(
-      xml('iq', { type: 'set' },
-        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
-          xml('publish', { node: 'eu.siacs.conversations.axolotl.devicelist' },
-            xml('item', {},
-              xml('list', { xmlns: 'eu.siacs.conversations.axolotl' },
-                ...currentDevices.map(id => xml('device', { id: String(id) }))
-              )
-            )
-          )
+    await this.publishToNode(
+      'eu.siacs.conversations.axolotl.devicelist',
+      xml('item', {},
+        xml('list', { xmlns: 'eu.siacs.conversations.axolotl' },
+          ...currentDevices.map(id => xml('device', { id: String(id) }))
         )
       ),
-      15000
+      1,
     );
     // eslint-disable-next-line no-console
     console.log('[OMEMO] Device list published.');
@@ -501,14 +594,12 @@ class OmemoService {
       return;
     }
 
-    await this.xmppClient.iqCaller.request(
-      xml('iq', { type: 'set' },
-        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
-          xml('publish', { node: 'eu.siacs.conversations.axolotl.devicelist' },
-            xml('item', {},
-              xml('list', { xmlns: 'eu.siacs.conversations.axolotl' },
-                ...currentDevices.map(id => xml('device', { id: String(id) }))))))),
-      15000,
+    await this.publishToNode(
+      'eu.siacs.conversations.axolotl.devicelist',
+      xml('item', {},
+        xml('list', { xmlns: 'eu.siacs.conversations.axolotl' },
+          ...currentDevices.map(id => xml('device', { id: String(id) })))),
+      1,
     );
     this.deviceListCache.delete(this.activeJid);
     // eslint-disable-next-line no-console
@@ -520,24 +611,19 @@ class OmemoService {
 
     // eslint-disable-next-line no-console
     console.log('[OMEMO] Publishing bundle to PEP...');
-    await this.xmppClient.iqCaller.request(
-      xml('iq', { type: 'set' },
-        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
-          xml('publish', { node: `eu.siacs.conversations.axolotl.bundles:${this.deviceId}` },
-            xml('item', {},
-              xml('bundle', { xmlns: 'eu.siacs.conversations.axolotl' },
-                xml('signedPreKeyPublic', { signedPreKeyId: String(this.signedPreKey.id) }, this.signedPreKey.publicKey),
-                xml('signedPreKeySignature', { signedPreKeyId: String(this.signedPreKey.id) }, this.signedPreKey.signature),
-                xml('identityKey', {}, this.identityPublicKey),
-                xml('prekeys', {},
-                  ...this.preKeys.map(pk => xml('preKeyPublic', { preKeyId: String(pk.id) }, pk.publicKey))
-                )
-              )
-            )
+    await this.publishToNode(
+      `eu.siacs.conversations.axolotl.bundles:${this.deviceId}`,
+      xml('item', {},
+        xml('bundle', { xmlns: 'eu.siacs.conversations.axolotl' },
+          xml('signedPreKeyPublic', { signedPreKeyId: String(this.signedPreKey.id) }, this.signedPreKey.publicKey),
+          xml('signedPreKeySignature', {}, this.signedPreKey.signature),
+          xml('identityKey', {}, this.identityPublicKey),
+          xml('prekeys', {},
+            ...this.preKeys.map(pk => xml('preKeyPublic', { preKeyId: String(pk.id) }, pk.publicKey))
           )
         )
       ),
-      15000
+      1,
     );
     // eslint-disable-next-line no-console
     console.log('[OMEMO] Bundle published.');
