@@ -1,12 +1,11 @@
 import { NativeModules } from 'react-native';
 import { xml } from '@xmpp/client';
 
-// 1. Mock expo-file-system
-jest.mock('expo-file-system', () => ({
-  documentDirectory: 'filesystem://',
-  getInfoAsync: jest.fn().mockResolvedValue({ exists: false }),
-  readAsStringAsync: jest.fn().mockResolvedValue(''),
-  writeAsStringAsync: jest.fn().mockResolvedValue(undefined),
+// 1. Mock Android Keystore-backed persistence
+jest.mock('expo-secure-store', () => ({
+  ALWAYS: 'always',
+  getItemAsync: jest.fn().mockResolvedValue(null),
+  setItemAsync: jest.fn().mockResolvedValue(undefined),
 }));
 
 // 2. Mock Native XmppOmemoModule
@@ -194,34 +193,4 @@ describe('OMEMO XEP-0384 Encryption & Decryption', () => {
     expect(mockNativeModule.aesGcmDecrypt).toHaveBeenCalledWith('key_b64', 'iv_b64', 'payload_b64');
   });
 
-  it('decrypts encrypted messages in OMEMO 2.0 format (urn:xmpp:omemo:2)', async () => {
-    await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
-
-    const encryptedXml = xml('encrypted', { xmlns: 'urn:xmpp:omemo:2' },
-      xml('header', { sid: '789' },
-        xml('key', { rid: String(Omemo.getDeviceId()) }, 'encrypted_key_v2'),
-        xml('iv', {}, 'iv_b64_v2')
-      ),
-      xml('payload', {}, 'payload_b64_v2')
-    );
-
-    // Mock session retrieval/creation
-    mockNativeModule.serialize.mockResolvedValue(JSON.stringify({
-      sessions: {
-        'contact@fuentelibre.org:789': 'session_data',
-      },
-    }));
-
-    mockNativeModule.decrypt.mockResolvedValueOnce('key_b64_v2');
-    mockNativeModule.aesGcmDecrypt.mockResolvedValueOnce('Hello OMEMO 2.0!');
-
-    const plaintext = await Omemo.decryptMessage('contact@fuentelibre.org', encryptedXml);
-
-    expect(plaintext).toBe('Hello OMEMO 2.0!');
-    expect(mockNativeModule.decrypt).toHaveBeenCalledWith(
-      'contact@fuentelibre.org:789',
-      { type: 2, body: 'encrypted_key_v2' }
-    );
-    expect(mockNativeModule.aesGcmDecrypt).toHaveBeenCalledWith('key_b64_v2', 'iv_b64_v2', 'payload_b64_v2');
-  });
 });

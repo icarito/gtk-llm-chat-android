@@ -56,7 +56,10 @@ export function useXmppAccount() {
     safeGet()
       .then((data) => {
         if (data) {
-          setAccount(JSON.parse(data));
+          const parsed = JSON.parse(data) as XmppAccountConfig;
+          // OMEMO is the safe default for existing installations created
+          // before the setting existed. The UI still allows opting out.
+          setAccount({ ...parsed, omemoEnabled: parsed.omemoEnabled ?? true });
         }
         setLoading(false);
       })

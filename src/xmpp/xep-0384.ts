@@ -1,7 +1,7 @@
 import { NativeModules } from 'react-native';
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
-import * as FileSystem from 'expo-file-system';
+import * as SecureStore from 'expo-secure-store';
 
 const getXmppOmemoModule = () => NativeModules.XmppOmemoModule;
 
@@ -49,6 +49,7 @@ class OmemoService {
   private preKeys: OmemoPreKey[] = [];
   private omemoEnabled: boolean = false;
   private initPromise: Promise<void> | null = null;
+  private cryptoTail: Promise<void> = Promise.resolve();
 
   // Cache: contactBareJid -> { devices: number[], expiresAt: number }
   private deviceListCache = new Map<string, { devices: number[]; expiresAt: number }>();
@@ -103,6 +104,22 @@ class OmemoService {
     return jid.split('/')[0];
   }
 
+  private stateKey(jid: string): string {
+    return `gtk_llm_chat.omemo.${jid.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+  }
+
+  private async serializedCrypto<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.cryptoTail;
+    let release!: () => void;
+    this.cryptoTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   init(jid: string, xmppClient: any, omemoEnabled: boolean): Promise<void> {
     this.initPromise = this.initInternal(jid, xmppClient, omemoEnabled);
@@ -128,13 +145,12 @@ class OmemoService {
       return;
     }
 
-    const statePath = `${FileSystem.documentDirectory}omemo-${this.activeJid}.json`;
+    const stateKey = this.stateKey(this.activeJid);
     let loadedState: OmemoState | null = null;
 
     try {
-      const info = await FileSystem.getInfoAsync(statePath);
-      if (info.exists) {
-        const content = await FileSystem.readAsStringAsync(statePath);
+      const content = await SecureStore.getItemAsync(stateKey, { requireAuthentication: false });
+      if (content) {
         loadedState = JSON.parse(content);
       }
     } catch (e) {
@@ -173,17 +189,15 @@ class OmemoService {
       await this.saveState();
     }
 
-    // Cache our own device ID as always valid
-    this.deviceListCache.set(this.activeJid, {
-      devices: [this.deviceId],
-      expiresAt: Date.now() + 100 * 365 * 24 * 3600 * 1000, // basically never expires
-    });
+    // Do not pin our own list to this device only: the server-side list also
+    // contains Gajim/Dino/other Android installations needed for sent carbons.
+    this.deviceListCache.delete(this.activeJid);
   }
 
   async saveState(): Promise<void> {
     const nativeMod = getXmppOmemoModule();
     if (!this.activeJid || !nativeMod) return;
-    const statePath = `${FileSystem.documentDirectory}omemo-${this.activeJid}.json`;
+    const stateKey = this.stateKey(this.activeJid);
     try {
       const nativeState = await nativeMod.serialize();
       const stateToSave = {
@@ -194,10 +208,14 @@ class OmemoService {
         preKeys: this.preKeys,
         nativeState,
       };
-      await FileSystem.writeAsStringAsync(statePath, JSON.stringify(stateToSave));
+      await SecureStore.setItemAsync(stateKey, JSON.stringify(stateToSave), {
+        requireAuthentication: false,
+        keychainAccessible: SecureStore.ALWAYS,
+      });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[OMEMO] Failed to save OMEMO state', e);
+      throw e;
     }
   }
 
@@ -292,7 +310,9 @@ class OmemoService {
       if (!bundleNode) return null;
 
       const registrationIdNode = bundleNode.getChild('registrationId');
-      const registrationId = registrationIdNode ? parseInt(registrationIdNode.text(), 10) : 0;
+      // Legacy OMEMO bundles do not publish a separate Signal registration
+      // id. Implementations use the advertised OMEMO device id here.
+      const registrationId = registrationIdNode ? parseInt(registrationIdNode.text(), 10) : devId;
 
       const signedPreKeyPublicNode = bundleNode.getChild('signedPreKeyPublic');
       const signedPreKeyId = signedPreKeyPublicNode ? parseInt(signedPreKeyPublicNode.attrs.signedPreKeyId, 10) : 0;
@@ -449,6 +469,10 @@ class OmemoService {
     if (this.initPromise) {
       await this.initPromise;
     }
+    return this.serializedCrypto(() => this.encryptMessageLocked(toJid, plaintext, isGroupChat));
+  }
+
+  private async encryptMessageLocked(toJid: string, plaintext: string, isGroupChat: boolean): Promise<{ encryptedXml: Element | null; wasEncrypted: boolean }> {
     const nativeMod = getXmppOmemoModule();
     if (!this.omemoEnabled || !nativeMod) {
       return { encryptedXml: null, wasEncrypted: false };
@@ -555,6 +579,10 @@ class OmemoService {
     if (this.initPromise) {
       await this.initPromise;
     }
+    return this.serializedCrypto(() => this.decryptMessageLocked(fromJid, encryptedXml));
+  }
+
+  private async decryptMessageLocked(fromJid: string, encryptedXml: Element): Promise<string> {
     const nativeMod = getXmppOmemoModule();
     if (!this.omemoEnabled || !nativeMod) {
       throw new Error('OMEMO is disabled or native module is not available');

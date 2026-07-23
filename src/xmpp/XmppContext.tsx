@@ -12,13 +12,15 @@ interface XmppContextValue {
   messages: Map<string, XmppMessage[]>;
   pendingActions: XmppPendingAction[];
   pushStatus: XmppPushStatus;
-  connect: (jid: string, password: string, service?: string, resource?: string) => Promise<void>;
+  connect: (jid: string, password: string, service?: string, resource?: string, omemoEnabled?: boolean) => Promise<void>;
   disconnect: () => Promise<void>;
   sendMessage: (to: string, body: string, type?: 'chat' | 'groupchat') => Promise<string>;
   sendTyping: (to: string) => Promise<void>;
   answerPendingAction: (actionId: string) => Promise<void>;
   setApprovalBypass: (targetJid: string, enabled: boolean, minutes?: number) => Promise<string>;
   account: { jid: string; service: string } | null;
+  omemoEnabled: boolean;
+  setOmemoEnabled: (enabled: boolean) => Promise<void>;
   isConfigured: boolean;
 }
 
@@ -73,9 +75,9 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
   }, [account, loading]);
 
   const connect = useCallback(
-    async (jid: string, password: string, service = 'wss://hablar.fuentelibre.org:5281/xmpp-websocket', resource = 'gtk-llm-chat') => {
+    async (jid: string, password: string, service = 'wss://hablar.fuentelibre.org:5281/xmpp-websocket', resource = 'gtk-llm-chat', omemoEnabled = true) => {
       const effectiveAccount = jid && password
-        ? { jid, password, service, resource }
+        ? { jid, password, service, resource, omemoEnabled }
         : account;
       if (!effectiveAccount) throw new Error('No hay cuenta configurada');
       await saveAccount(effectiveAccount);
@@ -87,6 +89,14 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
   const disconnect = useCallback(async () => {
     await XmppService.disconnect();
   }, []);
+
+  const setOmemoEnabled = useCallback(async (enabled: boolean) => {
+    if (!account) throw new Error('No hay cuenta configurada');
+    const updated = { ...account, omemoEnabled: enabled };
+    await saveAccount(updated);
+    await XmppService.disconnect();
+    await XmppService.connect(updated);
+  }, [account, saveAccount]);
 
   const sendMessage = useCallback(
     async (to: string, body: string, type: 'chat' | 'groupchat' = 'chat') => {
@@ -123,6 +133,8 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     answerPendingAction,
     setApprovalBypass,
     account: account ? { jid: account.jid, service: account.service } : null,
+    omemoEnabled: account?.omemoEnabled ?? true,
+    setOmemoEnabled,
     isConfigured: account !== null && !loading,
   };
 

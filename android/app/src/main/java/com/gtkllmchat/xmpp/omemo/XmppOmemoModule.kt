@@ -31,7 +31,7 @@ class MySignalProtocolStore(
 
     override fun saveIdentity(address: SignalProtocolAddress, identityKey: IdentityKey): Boolean {
         val existing = trustedIdentities[address]
-        if (existing != identityKey) {
+        if (existing == null) {
             trustedIdentities[address] = identityKey
             return true
         }
@@ -43,9 +43,15 @@ class MySignalProtocolStore(
         identityKey: IdentityKey,
         direction: IdentityKeyStore.Direction?
     ): Boolean {
-        // Always-trust
-        return true
+        // TOFU: trust the first identity we see, but never silently replace a
+        // previously pinned identity. A changed key must fail the session
+        // build instead of making encryption appear healthy.
+        val trusted = trustedIdentities[address]
+        return trusted == null || trusted == identityKey
     }
+
+    override fun getIdentity(address: SignalProtocolAddress): IdentityKey? =
+        trustedIdentities[address]
 
     override fun loadSession(address: SignalProtocolAddress): SessionRecord {
         return sessions[address] ?: SessionRecord()
@@ -104,6 +110,9 @@ class MySignalProtocolStore(
     override fun loadSignedPreKey(signedPreKeyId: Int): SignedPreKeyRecord {
         return signedPreKeys[signedPreKeyId] ?: throw InvalidKeyIdException("No signed prekey with ID $signedPreKeyId")
     }
+
+    override fun loadSignedPreKeys(): List<SignedPreKeyRecord> =
+        signedPreKeys.values.toList()
 
     override fun storeSignedPreKey(signedPreKeyId: Int, record: SignedPreKeyRecord) {
         signedPreKeys[signedPreKeyId] = record
@@ -422,10 +431,20 @@ class XmppOmemoModule(reactContext: ReactApplicationContext) :
             val spec = GCMParameterSpec(128, ivBytes)
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
 
-            val ciphertextBytes = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            val ciphertextAndTag = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            val tagLength = 16
+            if (ciphertextAndTag.size < tagLength) {
+                throw IllegalStateException("AES-GCM output did not contain an authentication tag")
+            }
+            val ciphertextBytes = ciphertextAndTag.copyOfRange(0, ciphertextAndTag.size - tagLength)
+            val authTag = ciphertextAndTag.copyOfRange(ciphertextAndTag.size - tagLength, ciphertextAndTag.size)
+            // Legacy OMEMO encrypts K || authentication-tag with Signal and
+            // puts only the ciphertext in <payload/>. Sending the tag as part
+            // of payload is not interoperable with Gajim/Dino/oldmemo.
+            val keyMaterial = keyBytes + authTag
 
             val map = Arguments.createMap()
-            map.putString("key", Base64.encodeToString(keyBytes, Base64.NO_WRAP))
+            map.putString("key", Base64.encodeToString(keyMaterial, Base64.NO_WRAP))
             map.putString("iv", Base64.encodeToString(ivBytes, Base64.NO_WRAP))
             map.putString("payload", Base64.encodeToString(ciphertextBytes, Base64.NO_WRAP))
             promise.resolve(map)
@@ -437,9 +456,15 @@ class XmppOmemoModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun aesGcmDecrypt(keyBase64: String, ivBase64: String, payloadBase64: String, promise: Promise) {
         try {
-            val keyBytes = Base64.decode(keyBase64, Base64.DEFAULT)
+            val keyMaterial = Base64.decode(keyBase64, Base64.DEFAULT)
             val ivBytes = Base64.decode(ivBase64, Base64.DEFAULT)
-            val payloadBytes = Base64.decode(payloadBase64, Base64.DEFAULT)
+            val ciphertextBytes = Base64.decode(payloadBase64, Base64.DEFAULT)
+            if (keyMaterial.size != 32) {
+                throw IllegalArgumentException("Legacy OMEMO key material must contain a 16-byte key and 16-byte tag")
+            }
+            val keyBytes = keyMaterial.copyOfRange(0, 16)
+            val authTag = keyMaterial.copyOfRange(16, 32)
+            val payloadBytes = ciphertextBytes + authTag
 
             val secretKey = SecretKeySpec(keyBytes, "AES")
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")

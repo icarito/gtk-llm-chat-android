@@ -58,10 +58,17 @@ function isGroupConversation(bareJid: string): boolean {
 }
 
 async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string) {
-  const encryptedNode = stanza.getChild('encrypted', 'eu.siacs.conversations.axolotl')
-    || stanza.getChild('encrypted', 'urn:xmpp:omemo:2');
-  if (!encryptedNode || !Omemo.isEnabled()) {
+  const legacyEncrypted = stanza.getChild('encrypted', 'eu.siacs.conversations.axolotl');
+  const omemo2Encrypted = stanza.getChild('encrypted', 'urn:xmpp:omemo:2');
+  const encryptedNode = legacyEncrypted || omemo2Encrypted;
+  if (!encryptedNode) {
     return { decryptedBody: null, wasEncrypted: false };
+  }
+  if (!Omemo.isEnabled()) {
+    return { decryptedBody: '🔒 [Mensaje OMEMO: activa el cifrado para descifrarlo]', wasEncrypted: true };
+  }
+  if (omemo2Encrypted) {
+    return { decryptedBody: '🔒 [Mensaje OMEMO 2: este backend aún no puede descifrarlo]', wasEncrypted: true };
   }
 
   try {
@@ -2131,19 +2138,6 @@ export const XmppService = {
       const rawBodyText = wasEncrypted ? (decryptedBody || '') : (stanza.getChildText('body') || '');
       const body = bodyWithOob(stanza, rawBodyText);
 
-      // If the decrypted key was a pre-key, send an empty response to complete handshake!
-      if (wasEncrypted && decryptedBody) {
-        const encryptedNode = stanza.getChild('encrypted', 'eu.siacs.conversations.axolotl')
-          || stanza.getChild('encrypted', 'urn:xmpp:omemo:2');
-        const header = encryptedNode?.getChild('header');
-        const keys = header?.getChildren('key');
-        const myKeyNode = keys?.find((k: Element) => parseInt(k.attrs.rid, 10) === Omemo.getDeviceId());
-        const isPrekey = myKeyNode?.attrs.prekey === 'true' || myKeyNode?.attrs.kex === 'true';
-        if (isPrekey) {
-          XmppService.sendMessage(bareJid(from), '', 'chat').catch(() => {});
-        }
-      }
-
       // XEP-0085: los estados viajan en mensajes sin cuerpo (o junto a uno).
       // Un cuerpo real implica que el contacto dejó de "escribir".
       const composing = Boolean(stanza.getChild('composing', CHAT_STATES_NS));
@@ -2327,23 +2321,19 @@ export const XmppService = {
     const id = `nc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const timestamp = new Date().toISOString();
 
-    // Check if empty body response for handshake
-    const isHandshake = body === '';
+    if (!body.trim()) throw new Error('No se puede enviar un mensaje vacío');
 
-    // Add outgoing message to map immediately unless it's an empty handshake message
-    if (!isHandshake) {
-      addMessageToMap({
-        id,
-        from: accountConfig?.jid ?? '',
-        to,
-        type,
-        body,
-        timestamp,
-        direction: 'out',
-        isGroup: type === 'groupchat',
-        sendState: 'pending',
-      });
-    }
+    addMessageToMap({
+      id,
+      from: accountConfig?.jid ?? '',
+      to,
+      type,
+      body,
+      timestamp,
+      direction: 'out',
+      isGroup: type === 'groupchat',
+      sendState: 'pending',
+    });
 
     try {
       if (accountConfig?.omemoEnabled && Omemo.isEnabled()) {
@@ -2354,17 +2344,20 @@ export const XmppService = {
             'message',
             { type, to, id },
             encryptedXml,
+            xml('encryption', {
+              xmlns: 'urn:xmpp:eme:0',
+              namespace: 'eu.siacs.conversations.axolotl',
+              name: 'OMEMO',
+            }),
+            xml('store', { xmlns: 'urn:xmpp:hints' }),
             // XEP-0085: un mensaje con cuerpo implica estado active.
             xml('active', { xmlns: CHAT_STATES_NS }),
           ));
-          if (!isHandshake) {
-            updateOutboundSendState(to, id, 'sent');
-          }
-          if (!isHandshake) {
-            XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
-          }
+          updateOutboundSendState(to, id, 'sent');
+          XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
           return id;
         }
+        throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
       }
 
       await xmppClient.send(xml(
@@ -2374,19 +2367,13 @@ export const XmppService = {
         // XEP-0085: un mensaje con cuerpo implica estado active.
         xml('active', { xmlns: CHAT_STATES_NS }),
       ));
-      if (!isHandshake) {
-        updateOutboundSendState(to, id, 'sent');
-      }
+      updateOutboundSendState(to, id, 'sent');
     } catch (error) {
-      if (!isHandshake) {
-        updateOutboundSendState(to, id, 'failed');
-      }
+      updateOutboundSendState(to, id, 'failed');
       throw error;
     }
-    if (!isHandshake) {
-      // Cached with no mam_id; the archive copy will be matched onto this row.
-      XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
-    }
+    // Cached with no mam_id; the archive copy will be matched onto this row.
+    XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
     return id;
   },
 
@@ -2449,6 +2436,7 @@ export const XmppService = {
           .catch(() => {});
         return slot.getUrl;
       }
+      throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
     }
 
     await xmppClient.send(
