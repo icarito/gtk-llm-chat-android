@@ -8,11 +8,23 @@ import {
   parseActionMetadata,
   parseInlineCommands,
   parseQuickResponses,
+  parseReplaceId,
 } from '@/xmpp/XmppService';
 import { isXmppNotificationNoise } from '@/xmpp/notifications';
 import type { XmppMessage, XmppPendingAction } from '@/types/xmpp';
 
 describe('NanoClaw XMPP action metadata', () => {
+  it('parses an outer XEP-0308 correction on an encrypted stanza', () => {
+    const stanza = parse(
+      `<message xmlns="jabber:client" type="chat" id="update-2">
+         <encrypted xmlns="eu.siacs.conversations.axolotl"/>
+         <replace xmlns="urn:xmpp:message-correct:0" id="seed-1"/>
+       </message>`,
+    );
+
+    expect(parseReplaceId(stanza)).toBe('seed-1');
+  });
+
   it('parses standard and legacy quick responses', () => {
     const stanza = parse(
       `<message xmlns="jabber:client" type="chat">

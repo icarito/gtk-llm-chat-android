@@ -94,7 +94,9 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     if (!account) throw new Error('No hay cuenta configurada');
     const updated = { ...account, omemoEnabled: enabled };
     await saveAccount(updated);
-    await XmppService.disconnect();
+    // connect() owns the exclusive disconnect/reconnect transition. Doing a
+    // separate disconnect here races the provider effect that observes the
+    // newly saved account and can reconnect with stale settings.
     await XmppService.connect(updated);
   }, [account, saveAccount]);
 

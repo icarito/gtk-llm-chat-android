@@ -37,6 +37,7 @@ export interface OmemoState {
 }
 
 const DEVICE_LIST_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const SECURE_STATE_CHUNK_SIZE = 1800;
 
 class OmemoService {
   private activeJid: string | null = null;
@@ -108,6 +109,42 @@ class OmemoService {
     return `gtk_llm_chat.omemo.${jid.replace(/[^A-Za-z0-9._-]/g, '_')}`;
   }
 
+  private async readSecureState(key: string): Promise<string | null> {
+    const partsRaw = await SecureStore.getItemAsync(`${key}.parts`, { requireAuthentication: false });
+    if (!partsRaw) {
+      // One-time migration from the first OMEMO build, which stored the whole
+      // JSON value under a single SecureStore key.
+      return SecureStore.getItemAsync(key, { requireAuthentication: false });
+    }
+    const partCount = Number(partsRaw);
+    if (!Number.isInteger(partCount) || partCount < 1) return null;
+    const parts = await Promise.all(Array.from({ length: partCount }, (_, index) =>
+      SecureStore.getItemAsync(`${key}.${index}`, { requireAuthentication: false })));
+    if (parts.some((part) => part === null)) {
+      throw new Error('OMEMO secure state is incomplete');
+    }
+    return parts.join('');
+  }
+
+  private async writeSecureState(key: string, value: string): Promise<void> {
+    const previousCount = Number(await SecureStore.getItemAsync(`${key}.parts`, {
+      requireAuthentication: false,
+    })) || 0;
+    const parts = value.match(new RegExp(`.{1,${SECURE_STATE_CHUNK_SIZE}}`, 'gs')) ?? [''];
+    const options = {
+      requireAuthentication: false,
+      keychainAccessible: SecureStore.ALWAYS,
+    };
+    await Promise.all(parts.map((part, index) =>
+      SecureStore.setItemAsync(`${key}.${index}`, part, options)));
+    await SecureStore.setItemAsync(`${key}.parts`, String(parts.length), options);
+    await SecureStore.deleteItemAsync(key);
+    await Promise.all(Array.from(
+      { length: Math.max(0, previousCount - parts.length) },
+      (_, offset) => SecureStore.deleteItemAsync(`${key}.${parts.length + offset}`),
+    ));
+  }
+
   private async serializedCrypto<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.cryptoTail;
     let release!: () => void;
@@ -149,7 +186,7 @@ class OmemoService {
     let loadedState: OmemoState | null = null;
 
     try {
-      const content = await SecureStore.getItemAsync(stateKey, { requireAuthentication: false });
+      const content = await this.readSecureState(stateKey);
       if (content) {
         loadedState = JSON.parse(content);
       }
@@ -208,10 +245,7 @@ class OmemoService {
         preKeys: this.preKeys,
         nativeState,
       };
-      await SecureStore.setItemAsync(stateKey, JSON.stringify(stateToSave), {
-        requireAuthentication: false,
-        keychainAccessible: SecureStore.ALWAYS,
-      });
+      await this.writeSecureState(stateKey, JSON.stringify(stateToSave));
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[OMEMO] Failed to save OMEMO state', e);
@@ -503,6 +537,10 @@ class OmemoService {
     await Promise.all(recipientJids.map(async (jid) => {
       const devList = await this.fetchDeviceList(jid);
       jidToDeviceList.set(jid, devList);
+      // Keep this visible in release logs while OMEMO interoperability is
+      // being validated: it tells us which clients the server advertises.
+      // eslint-disable-next-line no-console
+      console.log(`[OMEMO] Legacy devices advertised by ${jid}:`, devList.join(',') || '(none)');
     }));
 
     const candidates: Array<{ jid: string; deviceId: number }> = [];
@@ -523,6 +561,10 @@ class OmemoService {
         devicesToEncrypt.push(cand);
       }
     }));
+
+    // eslint-disable-next-line no-console
+    console.log('[OMEMO] Legacy sessions ready for:',
+      devicesToEncrypt.map(dev => `${dev.jid}:${dev.deviceId}`).join(',') || '(none)');
 
     if (devicesToEncrypt.length === 0) {
       // eslint-disable-next-line no-console
@@ -548,6 +590,8 @@ class OmemoService {
             ...(prekey ? { prekey: 'true' } : {}),
           }, ciphertext.body)
         );
+        // eslint-disable-next-line no-console
+        console.log(`[OMEMO] Added recipient key rid=${dev.deviceId} jid=${dev.jid}`);
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn(`[OMEMO] Failed to encrypt session key for device ${dev.jid}:${dev.deviceId}`, e);

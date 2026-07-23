@@ -6,6 +6,7 @@ jest.mock('expo-secure-store', () => ({
   ALWAYS: 'always',
   getItemAsync: jest.fn().mockResolvedValue(null),
   setItemAsync: jest.fn().mockResolvedValue(undefined),
+  deleteItemAsync: jest.fn().mockResolvedValue(undefined),
 }));
 
 // 2. Mock Native XmppOmemoModule

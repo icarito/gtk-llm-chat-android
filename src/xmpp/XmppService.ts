@@ -97,6 +97,11 @@ async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string) {
 
     return { decryptedBody: decryptedText, wasEncrypted: true };
   } catch (e) {
+    if (e instanceof Error && e.message.includes('Message was not encrypted for our device ID')) {
+      // Normal for MAM/carbons created before this installation published its
+      // device id, and for copies addressed exclusively to another own device.
+      return { decryptedBody: null, wasEncrypted: true };
+    }
     console.error('[OMEMO] Failed to decrypt inbound message from', fromJid, e);
     return { decryptedBody: '🔒 [Error al desencriptar mensaje OMEMO]', wasEncrypted: true };
   }
@@ -262,7 +267,11 @@ export function parseQuickResponses(stanza: Element): XmppQuickResponse[] {
  * gateway) — null si el mensaje no es una corrección.
  */
 export function parseReplaceId(stanza: Element): string | null {
-  const replace = stanza.getChild('replace', MESSAGE_CORRECT_NS);
+  const replace = stanza.getChild('replace', MESSAGE_CORRECT_NS)
+    ?? stanza.getChildren('replace').find((candidate) => {
+      const namespace = candidate.attrs.xmlns;
+      return namespace === MESSAGE_CORRECT_NS;
+    });
   return (replace?.attrs.id as string | undefined) || null;
 }
 
@@ -2261,6 +2270,7 @@ export const XmppService = {
       password: config.password || accountConfig?.password || '',
       service: config.service || accountConfig?.service || '',
       resource: config.resource || accountConfig?.resource || 'gtk-llm-chat-android',
+      omemoEnabled: config.omemoEnabled ?? accountConfig?.omemoEnabled ?? true,
     };
     if (!mergedConfig.jid || !mergedConfig.password || !mergedConfig.service) {
       throw new Error('XMPP account config incomplete for reconnect');
