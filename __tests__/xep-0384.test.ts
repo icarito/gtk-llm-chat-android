@@ -32,6 +32,7 @@ const mockNativeModule = {
   decrypt: jest.fn().mockResolvedValue('key_b64'),
   serialize: jest.fn().mockResolvedValue('{"localRegistrationId":12345,"sessions":{}}'),
   deserialize: jest.fn().mockResolvedValue(true),
+  resetSessions: jest.fn().mockResolvedValue(null),
   aesGcmEncrypt: jest.fn().mockImplementation((plaintext) => {
     const randomHex = () => Math.random().toString(36).slice(2, 10);
     return Promise.resolve({
@@ -121,6 +122,36 @@ describe('OMEMO XEP-0384 Encryption & Decryption', () => {
       }),
       15000
     );
+    const publishedIq = mockXmppClient.iqCaller.request.mock.calls[0][0];
+    const bundle = publishedIq
+      .getChild('pubsub', 'http://jabber.org/protocol/pubsub')
+      ?.getChild('publish')
+      ?.getChild('item')
+      ?.getChild('bundle', 'eu.siacs.conversations.axolotl');
+    expect(bundle?.getChild('prekeys')).toBeDefined();
+    expect(bundle?.getChild('preKeys')).toBeUndefined();
+  });
+
+  it('reads the lowercase legacy prekeys container used by Gajim', async () => {
+    const responseIq = xml('iq', { type: 'result' },
+      xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
+        xml('items', {}, xml('item', {},
+          xml('bundle', { xmlns: 'eu.siacs.conversations.axolotl' },
+            xml('signedPreKeyPublic', { signedPreKeyId: '7' }, 'signed-key'),
+            xml('signedPreKeySignature', { signedPreKeyId: '7' }, 'signature'),
+            xml('identityKey', {}, 'identity-key'),
+            xml('prekeys', {},
+              xml('preKeyPublic', { preKeyId: '42' }, 'one-time-key')))))));
+    mockXmppClient.iqCaller.request.mockResolvedValue(responseIq);
+    await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
+
+    const bundle = await Omemo.fetchBundle('gajim@example.org', 1234);
+
+    expect(bundle).toMatchObject({
+      deviceId: 1234,
+      preKeyId: 42,
+      preKeyPublic: 'one-time-key',
+    });
   });
 
   it('encrypts standard 1:1 messages', async () => {

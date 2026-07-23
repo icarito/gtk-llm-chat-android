@@ -1726,8 +1726,10 @@ export const XmppService = {
       if (config.omemoEnabled) {
         Omemo.init(config.jid, xmppClient, true)
           .then(async () => {
-            await Omemo.publishDeviceList();
             await Omemo.publishBundle();
+            // Advertise the device only after its bundle is available. Strict
+            // clients may fetch immediately on a device-list notification.
+            await Omemo.publishDeviceList();
           })
           .catch((err) => {
             console.error('[OMEMO] Failed to initialize OMEMO on online', err);

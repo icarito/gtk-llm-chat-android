@@ -29,6 +29,7 @@ export interface OmemoBundle {
 }
 
 export interface OmemoState {
+  sessionFormatVersion?: number;
   deviceId: number;
   registrationId: number;
   identityPublicKey: string; // base64
@@ -38,6 +39,7 @@ export interface OmemoState {
 
 const DEVICE_LIST_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const SECURE_STATE_CHUNK_SIZE = 1800;
+const SESSION_FORMAT_VERSION = 2;
 
 class OmemoService {
   private activeJid: string | null = null;
@@ -207,6 +209,15 @@ class OmemoService {
       // Re-initialize native module state
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await nativeMod.deserialize((loadedState as any).nativeState);
+      if (loadedState.sessionFormatVersion !== SESSION_FORMAT_VERSION) {
+        // Versions before 2 could create Signal sessions without the legacy
+        // one-time prekey because `<prekeys>` was parsed with the wrong case.
+        // Those sessions must not be reused after fixing bundle parsing.
+        // eslint-disable-next-line no-console
+        console.log('[OMEMO] Resetting legacy sessions created with incomplete bundles');
+        await nativeMod.resetSessions();
+        await this.saveState();
+      }
     } else {
       // eslint-disable-next-line no-console
       console.log('[OMEMO] Initializing fresh OMEMO state for', this.activeJid);
@@ -238,6 +249,7 @@ class OmemoService {
     try {
       const nativeState = await nativeMod.serialize();
       const stateToSave = {
+        sessionFormatVersion: SESSION_FORMAT_VERSION,
         deviceId: this.deviceId,
         registrationId: this.registrationId,
         identityPublicKey: this.identityPublicKey,
@@ -358,7 +370,10 @@ class OmemoService {
       const identityKeyNode = bundleNode.getChild('identityKey');
       const identityKey = identityKeyNode ? identityKeyNode.text().trim() : '';
 
-      const preKeysNode = bundleNode.getChild('preKeys');
+      // XEP-0384 legacy spells the container `<prekeys>` (lowercase k).
+      // Accept the mixed-case spelling too for compatibility with older
+      // gtk-llm-chat-android bundles, but never publish it ourselves.
+      const preKeysNode = bundleNode.getChild('prekeys') ?? bundleNode.getChild('preKeys');
       const preKeyList = preKeysNode ? preKeysNode.getChildren('preKeyPublic') : [];
       let preKeyId: number | undefined;
       let preKeyPublic: string | undefined;
@@ -368,6 +383,18 @@ class OmemoService {
         preKeyId = parseInt(selected.attrs.preKeyId, 10);
         preKeyPublic = selected.text().trim();
       }
+
+      if (!Number.isInteger(preKeyId) || !preKeyPublic ||
+          !Number.isInteger(signedPreKeyId) || !signedPreKeyPublic ||
+          !signedPreKeySignature || !identityKey) {
+        // A session without a one-time prekey produces a PreKeySignalMessage
+        // that strict clients such as Gajim reject as malformed.
+        // eslint-disable-next-line no-console
+        console.warn('[OMEMO] Incomplete legacy bundle for', bare, devId);
+        return null;
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[OMEMO] Selected legacy prekey ${preKeyId} for ${bare}:${devId}`);
 
       return {
         registrationId,
@@ -455,7 +482,7 @@ class OmemoService {
                 xml('signedPreKeyPublic', { signedPreKeyId: String(this.signedPreKey.id) }, this.signedPreKey.publicKey),
                 xml('signedPreKeySignature', { signedPreKeyId: String(this.signedPreKey.id) }, this.signedPreKey.signature),
                 xml('identityKey', {}, this.identityPublicKey),
-                xml('preKeys', {},
+                xml('prekeys', {},
                   ...this.preKeys.map(pk => xml('preKeyPublic', { preKeyId: String(pk.id) }, pk.publicKey))
                 )
               )

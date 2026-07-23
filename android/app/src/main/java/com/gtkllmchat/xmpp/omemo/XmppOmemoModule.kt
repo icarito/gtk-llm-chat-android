@@ -198,6 +198,16 @@ class XmppOmemoModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun resetSessions(promise: Promise) {
+        try {
+            getOrInitStore().sessions.clear()
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("OMEMO_RESET_SESSIONS_ERR", e.message, e)
+        }
+    }
+
+    @ReactMethod
     fun createSession(sessionAddress: String, identityKeyPairMap: ReadableMap?, bundleMap: ReadableMap, promise: Promise) {
         try {
             val store = getOrInitStore()
