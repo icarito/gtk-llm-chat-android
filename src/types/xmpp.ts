@@ -55,6 +55,8 @@ export interface XmppMessage {
   wasEncrypted?: boolean;
   /** Derived from the actual stanza, never from the account setting. */
   encryptionStatus?: 'encrypted' | 'undecryptable';
+  /** XEP-0308 target when this archived stanza corrects an earlier message. */
+  replaceId?: string | null;
 }
 
 /** Button color hint (paridad con Telegram / GTK). */

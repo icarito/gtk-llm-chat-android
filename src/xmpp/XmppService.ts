@@ -424,6 +424,7 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
     commands: actions.commands,
     replyTo: extractReply(message),
     oobUrl: extractOobUrl(message, body),
+    replaceId: parseReplaceId(message),
   };
 }
 
@@ -1344,16 +1345,39 @@ async function runMamQuery(
  * UNIQUE(bare_jid, mam_id) and would render a second time — attach the id to
  * the existing row instead.
  */
-async function persistAndDedupe(contactJid: string, messages: XmppMessage[]): Promise<XmppMessage[]> {
+export async function persistAndDedupe(contactJid: string, messages: XmppMessage[]): Promise<XmppMessage[]> {
   const fresh: XmppMessage[] = [];
   for (const msg of messages) {
     const mamId = msg.mamId ?? null;
-    // msg.id es el stanza id real del <message> en los tres caminos
-    // (en vivo, MAM, carbon) — es el mismo id que una corrección XEP-0308
-    // futura usará en su <replace id=...>. Sólo tiene sentido guardarlo
-    // si trae algo que luego pueda resolverse.
-    const hasPending = Boolean(msg.quickResponses?.length || msg.commands?.length);
-    const stanzaId = hasPending ? msg.id : null;
+    // Every message id is a possible XEP-0308 target. Streaming seeds usually
+    // have no buttons, so persisting ids only for actionable messages made
+    // their final corrections update memory but miss SQLite entirely.
+    const stanzaId = msg.id;
+
+    if (msg.replaceId) {
+      const applied = await XmppHistory.applyCorrectionByStanzaId(
+        contactJid,
+        msg.replaceId,
+        msg.body,
+        msg.timestamp,
+        msg.encryptionStatus === 'encrypted',
+      );
+      if (applied) {
+        const pending = fresh.findIndex((candidate) => candidate.id === msg.replaceId);
+        if (pending >= 0) {
+          fresh[pending] = {
+            ...fresh[pending],
+            body: msg.body,
+            timestamp: msg.timestamp,
+            wasEncrypted: msg.encryptionStatus === 'encrypted' || fresh[pending].wasEncrypted,
+            encryptionStatus: msg.encryptionStatus ?? fresh[pending].encryptionStatus,
+          };
+        }
+      }
+      // A correction is never a standalone chat bubble. If its target is
+      // outside this archive page it will be folded when that page is loaded.
+      continue;
+    }
     if (mamId && await XmppHistory.attachMamToRecentMessage(
       contactJid,
       msg.body,
@@ -2183,11 +2207,9 @@ export const XmppService = {
                 carbonMsg.quickResponses ?? [], carbonMsg.commands ?? []);
             }
             expireMatchingQuickResponses(partnerJid, carbonBody, delayTs);
-            const carbonHasPending = Boolean(
-              carbonMsg.quickResponses?.length || carbonMsg.commands?.length);
             XmppHistory.recordMessage(partnerJid, carbonBody, direction, delayTs, null,
               carbonMsg.quickResponses ?? null, carbonMsg.commands ?? null,
-              carbonHasPending ? msgId : null, carbonMsg.oobUrl ?? null,
+              msgId, carbonMsg.oobUrl ?? null,
               null, null, null, null,
               carbonMsg.encryptionStatus === 'encrypted').catch(() => {});
           }
@@ -2289,7 +2311,6 @@ export const XmppService = {
       addMessageToMap(msg, !wasCached && !catchingUp);
       addPendingActions(platformId, msg, quickResponses, commands);
       // Cache it so the next catch-up starts from here instead of refetching.
-      const hasPending = Boolean(quickResponses.length || commands.length);
       XmppHistory.recordMessage(
         platformId,
         msg.body,
@@ -2298,7 +2319,7 @@ export const XmppService = {
         null,
         quickResponses,
         commands,
-        hasPending ? msg.id : null,
+        msg.id,
         msg.oobUrl ?? null,
         null,
         null,
