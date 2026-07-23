@@ -9,7 +9,6 @@ import {
   Alert,
   ActivityIndicator,
   Image,
-  Switch,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
@@ -42,16 +41,12 @@ export default function XmppScreen() {
     connect,
     disconnect,
     account,
-    omemoEnabled: accountOmemoEnabled,
-    setOmemoEnabled: saveOmemoEnabled,
     isConfigured,
   } = useXmpp();
   const [jid, setJid] = useState('');
   const [password, setPassword] = useState('');
   const [server, setServer] = useState('wss://hablar.fuentelibre.org:5281/xmpp-websocket');
   const [resource, setResource] = useState('gtk-llm-chat');
-  const [omemoEnabled, setOmemoEnabled] = useState(true);
-  const [changingOmemo, setChangingOmemo] = useState(false);
   // Avatares XEP-0084: llegan por PEP cuando el contacto los publica, así que
   // el roster tiene que repintarse al vuelo (no basta con leerlos al montar).
   const [avatars, setAvatars] = useState<Map<string, string>>(() => new Map());
@@ -176,26 +171,15 @@ export default function XmppScreen() {
       return;
     }
     try {
-      await connect(jid, password, server, resource, omemoEnabled);
+      await connect(jid, password, server, resource, true);
     } catch (err) {
       Alert.alert('Error', `No se pudo conectar: ${String(err)}`);
     }
-  }, [jid, password, server, resource, omemoEnabled, connect]);
+  }, [jid, password, server, resource, connect]);
 
   const handleChatWith = useCallback((contactJid: string) => {
     router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(contactJid) } } as never);
   }, [router]);
-
-  const handleAccountOmemoChange = useCallback(async (enabled: boolean) => {
-    setChangingOmemo(true);
-    try {
-      await saveOmemoEnabled(enabled);
-    } catch (err) {
-      Alert.alert('OMEMO', `No se pudo cambiar el cifrado: ${String(err)}`);
-    } finally {
-      setChangingOmemo(false);
-    }
-  }, [saveOmemoEnabled]);
 
   // Spinner a pantalla completa sólo para el login inicial, sin roster ni
   // account todavía. Una reconexión automática (mismo estado 'connecting',
@@ -227,9 +211,18 @@ export default function XmppScreen() {
               {loadingPreviews && <ActivityIndicator size="small" color={Colors.primary} />}
             </View>
           </View>
-          <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn}>
-            <Ionicons name="power" size={20} color={Colors.error} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={() => router.push('/settings' as never)}
+              style={styles.disconnectBtn}
+              accessibilityLabel="Configuración"
+            >
+              <Ionicons name="settings-outline" size={21} color={Colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn} accessibilityLabel="Desconectar">
+              <Ionicons name="power" size={20} color={Colors.error} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {isReconnecting && (
@@ -238,23 +231,6 @@ export default function XmppScreen() {
             <Text style={styles.reconnectBannerText}>Desconectado — reconectando...</Text>
           </View>
         )}
-
-        <View style={styles.accountOmemoRow}>
-          <View style={styles.switchText}>
-            <Text style={styles.label}>Cifrado OMEMO</Text>
-            <Text style={styles.switchHint}>Al cambiarlo, la sesión XMPP se reconecta</Text>
-          </View>
-          {changingOmemo ? (
-            <ActivityIndicator size="small" color={Colors.primary} />
-          ) : (
-            <Switch
-              value={accountOmemoEnabled}
-              onValueChange={(enabled) => { void handleAccountOmemoChange(enabled); }}
-              disabled={isReconnecting}
-              trackColor={{ false: Colors.surfaceBorder, true: Colors.primary }}
-            />
-          )}
-        </View>
 
         <FlatList
           data={sortedContacts}
@@ -376,19 +352,6 @@ export default function XmppScreen() {
           />
         </View>
 
-        <View style={styles.switchRow}>
-          <View style={styles.switchText}>
-            <Text style={styles.label}>Cifrado OMEMO</Text>
-            <Text style={styles.switchHint}>OMEMO 1 compatible con Rolando, Gajim y Dino</Text>
-          </View>
-          <Switch
-            value={omemoEnabled}
-            onValueChange={setOmemoEnabled}
-            disabled={(state as string) === 'connecting'}
-            trackColor={{ false: Colors.surfaceBorder, true: Colors.primary }}
-          />
-        </View>
-
         <TouchableOpacity
           style={[styles.connectBtn, (state as string) === 'connecting' && styles.connectBtnDisabled]}
           onPress={handleConnect}
@@ -450,6 +413,11 @@ const styles = StyleSheet.create({
   },
   disconnectBtn: {
     padding: 8,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   reconnectBanner: {
     flexDirection: 'row',
@@ -549,31 +517,6 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
     color: Colors.text,
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  accountOmemoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surfaceBorder,
-  },
-  switchText: {
-    flex: 1,
-    gap: 3,
-  },
-  switchHint: {
-    color: Colors.textDim,
-    fontSize: 12,
   },
   connectBtn: {
     backgroundColor: Colors.primary,

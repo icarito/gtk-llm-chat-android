@@ -468,6 +468,53 @@ class OmemoService {
     console.log('[OMEMO] Device list published.');
   }
 
+  async removeOwnDevice(): Promise<void> {
+    if (!this.xmppClient || !this.activeJid) return;
+    let ownDeviceId = this.deviceId;
+    if (!ownDeviceId) {
+      const content = await this.readSecureState(this.stateKey(this.activeJid));
+      if (content) ownDeviceId = Number((JSON.parse(content) as OmemoState).deviceId);
+    }
+    if (!ownDeviceId) return;
+
+    let currentDevices: number[] = [];
+    try {
+      const result = await this.xmppClient.iqCaller.request(
+        xml('iq', { type: 'get' },
+          xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
+            xml('items', { node: 'eu.siacs.conversations.axolotl.devicelist' }))),
+        10000,
+      );
+      const list = result
+        .getChild('pubsub', 'http://jabber.org/protocol/pubsub')
+        ?.getChild('items')
+        ?.getChild('item')
+        ?.getChild('list', 'eu.siacs.conversations.axolotl');
+      currentDevices = (list?.getChildren('device') ?? [])
+        .map((device: Element) => Number(device.attrs.id))
+        .filter((id: number) => Number.isInteger(id) && id !== ownDeviceId);
+    } catch (error) {
+      // Never replace an unreadable list with an empty one: that would remove
+      // Gajim/Dino and every other own device along with this installation.
+      // eslint-disable-next-line no-console
+      console.warn('[OMEMO] Could not read device list while disabling', error);
+      return;
+    }
+
+    await this.xmppClient.iqCaller.request(
+      xml('iq', { type: 'set' },
+        xml('pubsub', { xmlns: 'http://jabber.org/protocol/pubsub' },
+          xml('publish', { node: 'eu.siacs.conversations.axolotl.devicelist' },
+            xml('item', {},
+              xml('list', { xmlns: 'eu.siacs.conversations.axolotl' },
+                ...currentDevices.map(id => xml('device', { id: String(id) }))))))),
+      15000,
+    );
+    this.deviceListCache.delete(this.activeJid);
+    // eslint-disable-next-line no-console
+    console.log('[OMEMO] Device removed from published legacy device list.');
+  }
+
   async publishBundle(): Promise<void> {
     if (!this.xmppClient || !this.deviceId || !this.signedPreKey) return;
 

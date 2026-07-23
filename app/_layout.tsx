@@ -124,6 +124,15 @@ export default function RootLayout() {
                 headerTintColor: '#E0E0E0',
               }}
             />
+            <Stack.Screen
+              name="settings"
+              options={{
+                headerShown: true,
+                headerTitle: 'Configuración',
+                headerStyle: { backgroundColor: '#131822' },
+                headerTintColor: '#E0E0E0',
+              }}
+            />
           </Stack>
         </XmppProvider>
       </SafeAreaProvider>
