@@ -1364,6 +1364,22 @@ export default function XmppChatScreen() {
                 {isStreaming && (
                   <ActivityIndicator size={12} color={Colors.primary} />
                 )}
+                {item.encryptionStatus === 'encrypted' && (
+                  <Ionicons
+                    name="lock-closed"
+                    size={11}
+                    color={isMine ? Colors.background : Colors.success}
+                    accessibilityLabel="Mensaje cifrado con OMEMO"
+                  />
+                )}
+                {item.encryptionStatus === 'undecryptable' && (
+                  <Ionicons
+                    name="warning"
+                    size={12}
+                    color={Colors.warning}
+                    accessibilityLabel="Mensaje cifrado que no se pudo descifrar"
+                  />
+                )}
                 <Text style={[styles.timestamp, isMine && styles.timestampMine]}>
                   {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   {isMine && item.sendState === 'sent' ? ' ✓' : ''}

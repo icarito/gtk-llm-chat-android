@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     attachment_duration REAL,
     attachment_local_path TEXT,
     attachment_state TEXT,
+    was_encrypted INTEGER NOT NULL DEFAULT 0,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
@@ -52,6 +53,7 @@ export interface HistoryRow {
   attachment_duration: number | null;
   attachment_local_path: string | null;
   attachment_state: string | null;
+  was_encrypted: number;
 }
 
 export interface HistoryPreviewRow extends HistoryRow {
@@ -146,6 +148,9 @@ async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> 
   if (!names.has('attachment_state')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN attachment_state TEXT');
   }
+  if (!names.has('was_encrypted')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN was_encrypted INTEGER NOT NULL DEFAULT 0');
+  }
   // Dedup de notificaciones que sobrevive al reinicio del proceso. El Set
   // `notifiedIds` de notifications.ts es memoria pura, así que tras reabrir la
   // app cualquier mensaje reentregado por el servidor volvía a notificar.
@@ -190,6 +195,7 @@ function decodeRow(row: DbHistoryRow): HistoryRow {
     attachment_duration: row.attachment_duration ?? null,
     attachment_local_path: row.attachment_local_path ?? null,
     attachment_state: row.attachment_state ?? null,
+    was_encrypted: Number(row.was_encrypted ?? 0),
   };
 }
 
@@ -233,13 +239,14 @@ export const XmppHistory = {
     attachmentDuration: number | null = null,
     attachmentLocalPath: string | null = null,
     attachmentState: string | null = null,
+    wasEncrypted = false,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
       'INSERT OR IGNORE INTO messages '
         + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, '
-        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, notified) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, was_encrypted, notified) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -254,6 +261,7 @@ export const XmppHistory = {
         attachmentDuration,
         attachmentLocalPath,
         attachmentState,
+        wasEncrypted ? 1 : 0,
         // Explícito, no por DEFAULT: en una instalación nueva todo lo que
         // entra es puesta al día y nace ya notificado (1), así que nadie
         // reclama notificación por ello. En una base existente nace en 0 y
@@ -339,8 +347,8 @@ export const XmppHistory = {
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM messages '
         + 'WHERE bare_jid = ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, limit],
@@ -352,8 +360,8 @@ export const XmppHistory = {
   async getBefore(bareJid: string, beforeTimestamp: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url FROM messages '
+      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM ('
+        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM messages '
         + 'WHERE bare_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, beforeTimestamp, limit],
@@ -394,7 +402,7 @@ export const XmppHistory = {
     const db = await getDb();
     const placeholders = unique.map(() => '?').join(',');
     const rows = await db.getAllAsync<DbHistoryRow & { bare_jid: string }>(
-      'SELECT m.bare_jid, m.body, m.direction, m.timestamp, m.mam_id, m.quick_responses, m.commands FROM messages m '
+      'SELECT m.bare_jid, m.body, m.direction, m.timestamp, m.mam_id, m.quick_responses, m.commands, m.was_encrypted FROM messages m '
         + 'JOIN ('
         + 'SELECT bare_jid, MAX(timestamp) AS timestamp FROM messages '
         + `WHERE bare_jid IN (${placeholders}) GROUP BY bare_jid`
@@ -420,6 +428,7 @@ export const XmppHistory = {
     quickResponses: XmppQuickResponse[] | null = null,
     commands: XmppInlineCommand[] | null = null,
     stanzaId: string | null = null,
+    wasEncrypted = false,
     windowSeconds = 30,
   ): Promise<boolean> {
     const target = parseTs(timestamp);
@@ -439,13 +448,15 @@ export const XmppHistory = {
           'UPDATE messages SET timestamp = ?, mam_id = ?, '
             + 'quick_responses = COALESCE(?, quick_responses), '
             + 'commands = COALESCE(?, commands), '
-            + 'stanza_id = COALESCE(?, stanza_id) WHERE id = ?',
+            + 'stanza_id = COALESCE(?, stanza_id), '
+            + 'was_encrypted = MAX(was_encrypted, ?) WHERE id = ?',
           [
             timestamp,
             mamId,
             encodeMetadata(quickResponses),
             encodeMetadata(commands),
             stanzaId,
+            wasEncrypted ? 1 : 0,
             row.id,
           ],
         );
@@ -484,12 +495,14 @@ export const XmppHistory = {
     stanzaId: string,
     body: string,
     timestamp: string,
+    wasEncrypted = false,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
-      'UPDATE messages SET body = ?, timestamp = ?, quick_responses = NULL, commands = NULL '
+      'UPDATE messages SET body = ?, timestamp = ?, quick_responses = NULL, commands = NULL, '
+        + 'was_encrypted = MAX(was_encrypted, ?) '
         + 'WHERE bare_jid = ? AND stanza_id = ?',
-      [body, timestamp, bareJid, stanzaId],
+      [body, timestamp, wasEncrypted ? 1 : 0, bareJid, stanzaId],
     );
     return result.changes > 0;
   },

@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 10.0.0"
+    "version": ">= 10.0.0",
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -17,10 +18,26 @@
       "autoIncrement": true,
       "android": {
         "buildType": "apk"
+      },
+      "ios": {
+        "image": "latest"
+      }
+    },
+    "ios-production": {
+      "autoIncrement": true,
+      "credentialsSource": "remote",
+      "ios": {
+        "image": "latest"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "appleId": "TU_APPLE_ID_EMAIL",
+        "ascAppId": "TU_APP_STORE_CONNECT_APP_ID",
+        "appleTeamId": "TU_TEAM_ID"
+      }
+    }
   }
 }

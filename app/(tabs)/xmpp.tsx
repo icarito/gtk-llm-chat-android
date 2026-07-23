@@ -171,7 +171,7 @@ export default function XmppScreen() {
       return;
     }
     try {
-      await connect(jid, password, server, resource);
+      await connect(jid, password, server, resource, true);
     } catch (err) {
       Alert.alert('Error', `No se pudo conectar: ${String(err)}`);
     }
@@ -211,9 +211,18 @@ export default function XmppScreen() {
               {loadingPreviews && <ActivityIndicator size="small" color={Colors.primary} />}
             </View>
           </View>
-          <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn}>
-            <Ionicons name="power" size={20} color={Colors.error} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={() => router.push('/settings' as never)}
+              style={styles.disconnectBtn}
+              accessibilityLabel="Configuración"
+            >
+              <Ionicons name="settings-outline" size={21} color={Colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn} accessibilityLabel="Desconectar">
+              <Ionicons name="power" size={20} color={Colors.error} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {isReconnecting && (
@@ -404,6 +413,11 @@ const styles = StyleSheet.create({
   },
   disconnectBtn: {
     padding: 8,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   reconnectBanner: {
     flexDirection: 'row',

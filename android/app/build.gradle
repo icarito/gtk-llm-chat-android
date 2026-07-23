@@ -148,6 +148,7 @@ android {
 }
 
 dependencies {
+    implementation("org.whispersystems:signal-protocol-android:2.8.1")
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
@@ -169,7 +170,7 @@ dependencies {
         }
     }
 
-    if (hermesEnabled.toBoolean()) {
+    if (findProperty("hermesEnabled")?.toBoolean() ?: true) {
         implementation("com.facebook.react:hermes-android")
     } else {
         implementation jscFlavor

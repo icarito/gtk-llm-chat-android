@@ -12,6 +12,12 @@
       "image": "./assets/splash.png",
       "resizeMode": "contain"
     },
+    "ios": {
+      "bundleIdentifier": "org.fuentelibre.gtk-llm-chat",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Allow gtk-llm-chat to record voice messages."
+      }
+    },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
