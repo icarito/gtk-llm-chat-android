@@ -101,7 +101,15 @@ async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string) {
     if (e instanceof Error && e.message.includes('Message was not encrypted for our device ID')) {
       // Normal for MAM/carbons created before this installation published its
       // device id, and for copies addressed exclusively to another own device.
-      return { decryptedBody: null, wasEncrypted: true, encryptionStatus: 'undecryptable' as const };
+      // Return a visible placeholder rather than null: callers treat
+      // `wasEncrypted && !decryptedBody` as an empty body and silently drop
+      // the message (see the `if (carbonBody)` / `if (!body) return;` gates),
+      // which made this failure indistinguishable from "never arrived".
+      return {
+        decryptedBody: '🔒 [Mensaje OMEMO: no descifrable en este dispositivo]',
+        wasEncrypted: true,
+        encryptionStatus: 'undecryptable' as const,
+      };
     }
     console.error('[OMEMO] Failed to decrypt inbound message from', fromJid, e);
     return { decryptedBody: '🔒 [Error al desencriptar mensaje OMEMO]', wasEncrypted: true, encryptionStatus: 'undecryptable' as const };

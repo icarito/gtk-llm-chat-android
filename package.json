@@ -11,6 +11,8 @@
     "build:android": "eas build --platform android",
     "lint": "eslint src app --ext .ts,.tsx",
     "lint:fix": "eslint src app --ext .ts,.tsx --fix",
+    "postinstall": "bash scripts/patch-expo-gradle.sh",
+    "eas-build-post-install": "bash scripts/patch-expo-gradle.sh",
     "type-check": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
