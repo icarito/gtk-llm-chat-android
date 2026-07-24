@@ -23,6 +23,15 @@
         "image": "latest"
       }
     },
+    "production-local": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "image": "latest"
+      }
+    },
     "ios-production": {
       "autoIncrement": true,
       "credentialsSource": "remote",
