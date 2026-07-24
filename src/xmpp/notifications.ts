@@ -281,7 +281,16 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
     );
   }
 
+  // Id estable por conversación: una notificación nueva del mismo contacto
+  // reemplaza a la anterior en vez de apilarse en la bandeja. Las de
+  // aprobación (con botones) llevan el msg.id porque cada una es una
+  // decisión distinta que no debe taparse con la siguiente.
+  const identifier = categoryIdentifier
+    ? `xmpp-msg:${bareJid(msg.from)}:${msg.id}`
+    : `xmpp-msg:${bareJid(msg.from)}`;
+
   await Notifications.scheduleNotificationAsync({
+    identifier,
     content: {
       title,
       body,
