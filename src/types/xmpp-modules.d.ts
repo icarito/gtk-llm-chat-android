@@ -4,11 +4,27 @@ declare module '@xmpp/xml' {
     stop(): Promise<void>;
     disconnect(): Promise<void>;
     send(element: Element): Promise<void>;
-    on(event: 'online' | 'offline' | 'error', handler: (...args: unknown[]) => void): void;
+    on(event: 'online' | 'offline' | 'error' | 'disconnect', handler: (...args: unknown[]) => void): void;
     on(event: 'stanza', handler: (stanza: Element) => void): void;
     on(event: 'status', handler: (status: string) => void): void;
     reconnect: Reconnect;
     iqCaller: IqCaller;
+    streamManagement: StreamManagement;
+  }
+
+  export interface StreamManagement {
+    /** Resume id del stream negociado (XEP-0198); '' si no está habilitado. */
+    id: string;
+    /** Contador de stanzas entrantes reconocidas ('h' en la spec). */
+    inbound: number;
+    /** Contador de stanzas salientes reconocidas. */
+    outbound: number;
+    enabled: boolean;
+    /** ms entre <r/> automáticos; 0 desactiva ese watchdog interno. */
+    requestAckInterval: number;
+    /** ms de espera de <a/> antes de forzar disconnect(); 0 desactiva. */
+    timeout: number;
+    on(event: 'resumed' | 'ack' | 'fail', handler: (...args: unknown[]) => void): void;
   }
 
   export interface Element {
@@ -29,6 +45,7 @@ declare module '@xmpp/xml' {
   export interface Reconnect {
     delay: number;
     on(event: 'reconnecting' | 'reconnected', handler: () => void): void;
+    stop(): void;
   }
 
   export interface IqCaller {

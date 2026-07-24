@@ -468,6 +468,23 @@ let userStopped = false;
 /** bare JID -> the set of their resources currently announcing availability. */
 let onlineResources = new Map<string, Set<string>>();
 
+/**
+ * Estado de XEP-0198 (Stream Management) de la sesión anterior, guardado
+ * fuera del ciclo de vida de xmppClient para poder pedir <resume/> en la
+ * próxima conexión en vez de un bind completo. connectExclusive() crea un
+ * Client nuevo en cada llamada — sin esto, cada reconexión (constante en
+ * móvil por Doze/cambios de red) perdía el resume id y forzaba al servidor a
+ * reenviar mensajes/carbons pendientes como si fuera una sesión nueva.
+ *
+ * Se captura en el evento 'disconnect' (antes de 'offline'): el propio
+ * módulo @xmpp/stream-management resetea sm.id/inbound/outbound al ver
+ * 'offline', así que hay que leerlos un paso antes.
+ *
+ * Atado al jid: si se cambia de cuenta un resume id viejo no debe
+ * reutilizarse contra un stream que el servidor nunca asoció a esa sesión.
+ */
+let savedStreamManagement: { jid: string; id: string; inbound: number; outbound: number } | null = null;
+
 /** PEP telemetry cache: bare_jid -> telemetry dict parsed from pubsub events. */
 const agentTelemetry = new Map<string, Record<string, unknown>>();
 
@@ -1812,6 +1829,37 @@ export const XmppService = {
       resource: `${config.resource || 'gtk-llm-chat-android'}-${deviceSuffix}`,
     });
 
+    // XEP-0198 Stream Management: si la sesión anterior (misma cuenta) dejó
+    // un resume id guardado, lo reinyectamos ANTES de conectar. El módulo lo
+    // detecta él solo en la negociación de stream features y pide <resume/>
+    // en vez de bind completo, evitando que el servidor reenvíe mensajes y
+    // carbons ya entregados. bind2 no se usa acá (sin sasl2/fast configurado
+    // con credenciales reales), así que el resume viaja por el camino
+    // clásico post-bind — ver @xmpp/stream-management/stream-feature.js.
+    if (savedStreamManagement?.jid === config.jid) {
+      Object.assign(xmppClient.streamManagement, {
+        id: savedStreamManagement.id,
+        inbound: savedStreamManagement.inbound,
+        outbound: savedStreamManagement.outbound,
+      });
+    }
+    // El ping XEP-0199 propio (startPing) ya vigila la conexión con su propio
+    // watchdog y reintento; el <r/> periódico interno de SM sería un segundo
+    // reloj redundante vigilando lo mismo. Se desactiva (0 = sin timer) y SM
+    // queda limitado a llevar la cuenta de acks para el resume.
+    xmppClient.streamManagement.requestAckInterval = 0;
+    xmppClient.streamManagement.timeout = 0;
+
+    xmppClient.on('disconnect', () => {
+      if (!xmppClient) return;
+      const sm = xmppClient.streamManagement;
+      // Sin id no hubo (o no siguió habiendo) SM habilitado en esta sesión;
+      // no hay nada que resumir la próxima vez.
+      savedStreamManagement = sm.id
+        ? { jid: config.jid, id: sm.id, inbound: sm.inbound, outbound: sm.outbound }
+        : null;
+    });
+
     xmppClient.reconnect.on('reconnecting', () => {
       xmppClient!.reconnect.delay = 5000;
     });
@@ -2427,6 +2475,13 @@ export const XmppService = {
     reconnectPromise = (async () => {
       stopPing();
       if (xmppClient) {
+        // El reconnect interno de @xmpp/client (paquete @xmpp/reconnect)
+        // sigue escuchando "disconnect" aunque nosotros descartemos el
+        // cliente. Sin este stop() explícito, xmppClient.stop() de abajo
+        // dispara "disconnect" y el paquete reconecta ESE cliente viejo en
+        // paralelo con el nuevo que estamos por crear en connect() — dos
+        // Client abriendo socket a la vez, y el estado oscila sin converger.
+        xmppClient.reconnect.stop();
         await xmppClient.stop().catch(() => {});
         xmppClient = null;
       }
@@ -2444,12 +2499,20 @@ export const XmppService = {
     stopRetry();
     stopPing();
     if (xmppClient) {
+      // Ver comentario equivalente en reconnectIfNeeded: sin esto, el
+      // reconnect interno del paquete puede reabrir la conexión que el
+      // usuario acaba de pedir cerrar.
+      xmppClient.reconnect.stop();
       await xmppClient.stop().catch(() => {});
       xmppClient = null;
     }
     await ForegroundService.stop().catch(() => {});
     connectionState = 'disconnected';
     notifyState();
+    // Logout explícito, no una caída: no tiene sentido resumir esta sesión
+    // en el próximo login (el listener 'disconnect' de arriba la habrá
+    // guardado igual, hay que descartarla acá).
+    savedStreamManagement = null;
     // Otra cuenta puede estar en otro servidor: re-descubrir el componente
     // de subida en la próxima sesión.
     uploadHostCache = undefined;
