@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ -z "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
-  echo "GOOGLE_SERVICES_JSON_BASE64 not set, skipping google-services.json write"
+if [ -z "${GOOGLE_SERVICES_JSON:-}" ]; then
+  echo "GOOGLE_SERVICES_JSON not set, skipping google-services.json write"
   exit 0
 fi
 
-echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > android/app/google-services.json
+cp "$GOOGLE_SERVICES_JSON" android/app/google-services.json

@@ -11,7 +11,7 @@
     "build:android": "eas build --platform android",
     "lint": "eslint src app --ext .ts,.tsx",
     "lint:fix": "eslint src app --ext .ts,.tsx --fix",
-    "eas-build-pre-install": "bash eas-hooks/write-google-services.sh",
+    "eas-build-post-install": "bash eas-hooks/write-google-services.sh",
     "type-check": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
