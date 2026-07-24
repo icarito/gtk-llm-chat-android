@@ -2750,10 +2750,41 @@ export const XmppService = {
     return executeCommand(targetJid, node);
   },
 
-  async setApprovalBypass(targetJid: string, enabled: boolean, _minutes = 15): Promise<string> {
+  // El servidor registra "approval-bypass" como comando ad-hoc XEP-0050 real
+  // (no un alias de texto) -- ver openclaw-xmpp OPERATIONS.md. Antes esto
+  // mandaba `/oc approval-bypass on|off` como mensaje de chat plano, que el
+  // servidor rechazaba con "Command not found" porque ese nodo textual nunca
+  // existió; el nombre coincidía por casualidad con el node real, pero el
+  // mecanismo de invocación era el equivocado. executeCommand ejecuta el
+  // mismo camino XEP-0050 que el resto de comandos ad-hoc del cliente.
+  async setApprovalBypass(targetJid: string, enabled: boolean, minutes = 10): Promise<string> {
     const mode = enabled ? 'on' : 'off';
-    await this.sendMessage(targetJid, `/oc approval-bypass ${mode}`, 'chat');
-    return `approval-bypass ${mode} enviado`;
+    const form: DataForm = {
+      type: 'submit',
+      fields: [
+        { var: 'mode', value: mode },
+        ...(enabled ? [{ var: 'minutes', value: String(minutes) }] : []),
+      ],
+    };
+    return executeCommand(targetJid, 'approval-bypass', form);
+  },
+
+  // Consulta el estado real del bypass en el servidor -- necesario porque el
+  // bypass expira solo (timer server-side, ver openclaw-xmpp design.md), y
+  // sin esto el switch del cliente se quedaría "prendido" tras la expiración
+  // hasta que el usuario lo tocara de nuevo. Devuelve minutos restantes
+  // parseados del texto de respuesta (el servidor no expone un campo
+  // estructurado, solo el texto que un humano leería).
+  async getApprovalBypassStatus(targetJid: string): Promise<{ active: boolean; remainingMinutes?: number }> {
+    const form: DataForm = { type: 'submit', fields: [{ var: 'mode', value: 'status' }] };
+    const text = await executeCommand(targetJid, 'approval-bypass', form);
+    const active = /activo/i.test(text);
+    if (!active) return { active: false };
+    const match = text.match(/quedan\s+(\d+)([ms])/i);
+    if (!match) return { active: true };
+    const value = Number.parseInt(match[1]!, 10);
+    const remainingMinutes = match[2]!.toLowerCase() === 'm' ? value : Math.ceil(value / 60);
+    return { active: true, remainingMinutes };
   },
 
   async sendTyping(to: string) {

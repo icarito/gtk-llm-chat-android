@@ -550,6 +550,7 @@ export default function XmppChatScreen() {
     sendMessage,
     answerPendingAction,
     setApprovalBypass,
+    getApprovalBypassStatus,
     connect,
     isConfigured,
   } = useXmpp();
@@ -563,6 +564,7 @@ export default function XmppChatScreen() {
   const [attaching, setAttaching] = useState(false);
   const [agentControlsOpen, setAgentControlsOpen] = useState(false);
   const [bypassEnabled, setBypassEnabled] = useState(false);
+  const [bypassRemainingMinutes, setBypassRemainingMinutes] = useState<number | null>(null);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const [availableCommands, setAvailableCommands] = useState<XmppInlineCommand[]>([]);
   const [loadingCommands, setLoadingCommands] = useState(false);
@@ -1221,13 +1223,49 @@ export default function XmppChatScreen() {
     setBypassEnabled(next);
     setControlNotice(null);
     try {
-      await setApprovalBypass(decodedJid, next, 15);
-      setControlNotice(next ? 'Bypass activo 15 min' : 'Bypass desactivado');
+      // El servidor confirma con el minutaje real aplicado (clamp incluido
+      // si se pidió más del máximo) -- se muestra tal cual en vez de un
+      // texto fijo que podría no coincidir.
+      const result = await setApprovalBypass(decodedJid, next, 10);
+      setControlNotice(result);
+      if (next) {
+        setBypassRemainingMinutes(10);
+      } else {
+        setBypassRemainingMinutes(null);
+      }
     } catch (err) {
       setBypassEnabled(!next);
       setControlNotice(String(err));
     }
   }, [bypassEnabled, decodedJid, setApprovalBypass]);
+
+  // El bypass expira solo en el servidor (timer server-side, sin aviso
+  // push al cliente) -- sin este poll el switch quedaría "prendido" en la
+  // UI para siempre tras la expiración real. Solo corre mientras el popover
+  // de una aprobación está abierto, para no generar tráfico XMPP constante
+  // en segundo plano.
+  useEffect(() => {
+    if (!showPendingPopover || !visiblePendingIsApproval || state !== 'online') return;
+    let cancelled = false;
+    const poll = () => {
+      getApprovalBypassStatus(decodedJid)
+        .then(({ active, remainingMinutes }) => {
+          if (cancelled) return;
+          setBypassEnabled(active);
+          setBypassRemainingMinutes(active ? (remainingMinutes ?? null) : null);
+        })
+        .catch(() => {
+          // Silencioso: es un poll de refresco de UI, no una acción del
+          // usuario -- un error transitorio de red no debe interrumpir nada.
+        });
+    };
+    poll();
+    const interval = setInterval(poll, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [showPendingPopover, visiblePendingIsApproval, state, decodedJid, getApprovalBypassStatus]);
 
   const handleRunCommand = useCallback(async (command: XmppInlineCommand) => {
     setCommandBusyNode(command.node);
@@ -1769,6 +1807,26 @@ export default function XmppChatScreen() {
                   </View>
                 ))}
               </ScrollView>
+              {visiblePendingIsApproval && (
+                <View style={styles.popoverBypassRow}>
+                  <TouchableOpacity
+                    style={[styles.bypassButton, bypassEnabled && styles.bypassButtonActive]}
+                    disabled={state !== 'online'}
+                    onPress={handleToggleBypass}
+                  >
+                    <Ionicons
+                      name={bypassEnabled ? 'shield-checkmark' : 'shield-outline'}
+                      size={17}
+                      color={bypassEnabled ? Colors.background : Colors.text}
+                    />
+                    <Text style={[styles.bypassButtonText, bypassEnabled && styles.bypassButtonTextActive]}>
+                      {bypassEnabled
+                        ? `Bypass activo${bypassRemainingMinutes != null ? ` (${bypassRemainingMinutes}m)` : ''}`
+                        : 'Bypass aprobaciones 10 min'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           </Pressable>
         </Modal>
@@ -2248,6 +2306,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+  },
+  popoverBypassRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingTop: 12,
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: Colors.surfaceBorder,
   },
   commandLoadingRow: {
     flexDirection: 'row',

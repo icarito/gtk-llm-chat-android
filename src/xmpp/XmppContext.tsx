@@ -18,6 +18,7 @@ interface XmppContextValue {
   sendTyping: (to: string) => Promise<void>;
   answerPendingAction: (actionId: string) => Promise<void>;
   setApprovalBypass: (targetJid: string, enabled: boolean, minutes?: number) => Promise<string>;
+  getApprovalBypassStatus: (targetJid: string) => Promise<{ active: boolean; remainingMinutes?: number }>;
   account: { jid: string; service: string } | null;
   omemoEnabled: boolean;
   setOmemoEnabled: (enabled: boolean) => Promise<void>;
@@ -118,8 +119,12 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     await XmppService.answerPendingAction(actionId);
   }, []);
 
-  const setApprovalBypass = useCallback(async (targetJid: string, enabled: boolean, minutes = 15) => {
+  const setApprovalBypass = useCallback(async (targetJid: string, enabled: boolean, minutes = 10) => {
     return XmppService.setApprovalBypass(targetJid, enabled, minutes);
+  }, []);
+
+  const getApprovalBypassStatus = useCallback(async (targetJid: string) => {
+    return XmppService.getApprovalBypassStatus(targetJid);
   }, []);
 
   const value: XmppContextValue = {
@@ -134,6 +139,7 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     sendTyping,
     answerPendingAction,
     setApprovalBypass,
+    getApprovalBypassStatus,
     account: account ? { jid: account.jid, service: account.service } : null,
     omemoEnabled: account?.omemoEnabled ?? true,
     setOmemoEnabled,
