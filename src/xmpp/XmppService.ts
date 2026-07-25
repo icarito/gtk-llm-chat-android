@@ -31,7 +31,7 @@ import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
 import { Omemo } from '@/xmpp/xep-0384';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
-import { buildFormElement } from '@/xmpp/xep-0004';
+import { buildFormElement, parseSubmitForm } from '@/xmpp/xep-0004';
 import { buildCommandExecuteStanza, extractApprovalSummary, markdownToPlain } from '@/xmpp/outbound-render';
 
 // ── Utils ──
@@ -1123,7 +1123,13 @@ async function requestUploadSlot(
   return { putUrl, getUrl, headers };
 }
 
-async function executeCommand(targetJid: string, node: string, form?: DataForm): Promise<string> {
+/** Command result with both the human-readable note and, when the server
+ *  attached one (xmpp-approval-unified-contract), the structured XEP-0004
+ *  `type="result"` form as parsed var->value pairs. `fields` is `{}` when
+ *  the server didn't attach a result form -- most ad-hoc commands don't. */
+type CommandResult = { text: string; fields: Record<string, string> };
+
+async function executeCommandWithFields(targetJid: string, node: string, form?: DataForm): Promise<CommandResult> {
   if (!xmppClient || connectionState !== 'online') {
     throw new Error('XMPP not connected');
   }
@@ -1138,7 +1144,7 @@ async function executeCommand(targetJid: string, node: string, form?: DataForm):
   );
   let command = first.getChild('command', COMMAND_NS);
   if (!command) throw new Error('Invalid command response');
-  if (command.attrs.status === 'completed') return noteText(command);
+  if (command.attrs.status === 'completed') return { text: noteText(command), fields: resultFields(command) };
   if (!form) throw new Error('Command requires a form submission');
 
   const sessionid = command.attrs.sessionid as string | undefined;
@@ -1154,7 +1160,19 @@ async function executeCommand(targetJid: string, node: string, form?: DataForm):
   );
   command = second.getChild('command', COMMAND_NS);
   if (!command) throw new Error('Invalid command submit response');
-  return noteText(command);
+  return { text: noteText(command), fields: resultFields(command) };
+}
+
+/** `parseSubmitForm` reads var/value pairs from any `jabber:x:data` child
+ *  regardless of its `type` attribute (submit or result) -- the wire shape
+ *  is identical, only the semantics differ. */
+function resultFields(command: Element): Record<string, string> {
+  const x = command.getChild('x', 'jabber:x:data');
+  return x ? parseSubmitForm(x) : {};
+}
+
+async function executeCommand(targetJid: string, node: string, form?: DataForm): Promise<string> {
+  return (await executeCommandWithFields(targetJid, node, form)).text;
 }
 
 // ── XEP-0199 Ping ──
@@ -2772,19 +2790,20 @@ export const XmppService = {
   // Consulta el estado real del bypass en el servidor -- necesario porque el
   // bypass expira solo (timer server-side, ver openclaw-xmpp design.md), y
   // sin esto el switch del cliente se quedaría "prendido" tras la expiración
-  // hasta que el usuario lo tocara de nuevo. Devuelve minutos restantes
-  // parseados del texto de respuesta (el servidor no expone un campo
-  // estructurado, solo el texto que un humano leería).
+  // hasta que el usuario lo tocara de nuevo.
+  //
+  // Lee el campo estructurado que el servidor adjunta desde
+  // xmpp-approval-unified-contract (var=active/remaining-seconds en un <x
+  // type="result">), no el texto libre -- antes esto parseaba /activo/i +
+  // /quedan\s+(\d+)([ms])/i sobre la prosa en español, que se rompía en
+  // silencio con cualquier cambio de wording del lado servidor.
   async getApprovalBypassStatus(targetJid: string): Promise<{ active: boolean; remainingMinutes?: number }> {
     const form: DataForm = { type: 'submit', fields: [{ var: 'mode', value: 'status' }] };
-    const text = await executeCommand(targetJid, 'approval-bypass', form);
-    const active = /activo/i.test(text);
-    if (!active) return { active: false };
-    const match = text.match(/quedan\s+(\d+)([ms])/i);
-    if (!match) return { active: true };
-    const value = Number.parseInt(match[1]!, 10);
-    const remainingMinutes = match[2]!.toLowerCase() === 'm' ? value : Math.ceil(value / 60);
-    return { active: true, remainingMinutes };
+    const { fields } = await executeCommandWithFields(targetJid, 'approval-bypass', form);
+    if (fields.active !== 'true') return { active: false };
+    const remainingSeconds = Number.parseInt(fields['remaining-seconds'] ?? '', 10);
+    if (!Number.isFinite(remainingSeconds)) return { active: true };
+    return { active: true, remainingMinutes: Math.ceil(remainingSeconds / 60) };
   },
 
   async sendTyping(to: string) {
