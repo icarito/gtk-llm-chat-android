@@ -549,8 +549,8 @@ export default function XmppChatScreen() {
     contacts,
     sendMessage,
     answerPendingAction,
-    setApprovalBypass,
-    getApprovalBypassStatus,
+    setElevatedSession,
+    getElevatedSessionStatus,
     connect,
     isConfigured,
   } = useXmpp();
@@ -1226,7 +1226,7 @@ export default function XmppChatScreen() {
       // El servidor confirma con el minutaje real aplicado (clamp incluido
       // si se pidió más del máximo) -- se muestra tal cual en vez de un
       // texto fijo que podría no coincidir.
-      const result = await setApprovalBypass(decodedJid, next, 10);
+      const result = await setElevatedSession(decodedJid, next, 10);
       setControlNotice(result);
       if (next) {
         setBypassRemainingMinutes(10);
@@ -1237,7 +1237,7 @@ export default function XmppChatScreen() {
       setBypassEnabled(!next);
       setControlNotice(String(err));
     }
-  }, [bypassEnabled, decodedJid, setApprovalBypass]);
+  }, [bypassEnabled, decodedJid, setElevatedSession]);
 
   // El bypass expira solo en el servidor (timer server-side, sin aviso
   // push al cliente) -- sin este poll el switch quedaría "prendido" en la
@@ -1248,8 +1248,8 @@ export default function XmppChatScreen() {
     if (!showPendingPopover || !visiblePendingIsApproval || state !== 'online') return;
     let cancelled = false;
     const poll = () => {
-      getApprovalBypassStatus(decodedJid)
-        .then(({ active, remainingMinutes }) => {
+      getElevatedSessionStatus(decodedJid)
+        .then(({ active, remainingMinutes }: { active: boolean; remainingMinutes?: number }) => {
           if (cancelled) return;
           setBypassEnabled(active);
           setBypassRemainingMinutes(active ? (remainingMinutes ?? null) : null);
@@ -1265,7 +1265,7 @@ export default function XmppChatScreen() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [showPendingPopover, visiblePendingIsApproval, state, decodedJid, getApprovalBypassStatus]);
+  }, [showPendingPopover, visiblePendingIsApproval, state, decodedJid, getElevatedSessionStatus]);
 
   const handleRunCommand = useCallback(async (command: XmppInlineCommand) => {
     setCommandBusyNode(command.node);

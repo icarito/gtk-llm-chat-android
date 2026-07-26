@@ -2768,14 +2768,13 @@ export const XmppService = {
     return executeCommand(targetJid, node);
   },
 
-  // El servidor registra "approval-bypass" como comando ad-hoc XEP-0050 real
-  // (no un alias de texto) -- ver openclaw-xmpp OPERATIONS.md. Antes esto
-  // mandaba `/oc approval-bypass on|off` como mensaje de chat plano, que el
-  // servidor rechazaba con "Command not found" porque ese nodo textual nunca
-  // existió; el nombre coincidía por casualidad con el node real, pero el
-  // mecanismo de invocación era el equivocado. executeCommand ejecuta el
-  // mismo camino XEP-0050 que el resto de comandos ad-hoc del cliente.
-  async setApprovalBypass(targetJid: string, enabled: boolean, minutes = 10): Promise<string> {
+  // El servidor registra "elevated" como comando ad-hoc XEP-0050 real (no un
+  // alias de texto) -- ver openclaw-xmpp OPERATIONS.md. Reemplaza el nodo
+  // "approval-bypass" retirado en xmpp-elevated-session-command: mismo
+  // contrato de campos, ahora respaldado por SessionEntry.elevatedLevel en
+  // vez de execSecurity/execAsk directo. executeCommand ejecuta el mismo
+  // camino XEP-0050 que el resto de comandos ad-hoc del cliente.
+  async setElevatedSession(targetJid: string, enabled: boolean, minutes = 10): Promise<string> {
     const mode = enabled ? 'on' : 'off';
     const form: DataForm = {
       type: 'submit',
@@ -2784,7 +2783,7 @@ export const XmppService = {
         ...(enabled ? [{ var: 'minutes', value: String(minutes) }] : []),
       ],
     };
-    return executeCommand(targetJid, 'approval-bypass', form);
+    return executeCommand(targetJid, 'elevated', form);
   },
 
   // Consulta el estado real del bypass en el servidor -- necesario porque el
@@ -2792,14 +2791,12 @@ export const XmppService = {
   // sin esto el switch del cliente se quedaría "prendido" tras la expiración
   // hasta que el usuario lo tocara de nuevo.
   //
-  // Lee el campo estructurado que el servidor adjunta desde
-  // xmpp-approval-unified-contract (var=active/remaining-seconds en un <x
-  // type="result">), no el texto libre -- antes esto parseaba /activo/i +
-  // /quedan\s+(\d+)([ms])/i sobre la prosa en español, que se rompía en
-  // silencio con cualquier cambio de wording del lado servidor.
-  async getApprovalBypassStatus(targetJid: string): Promise<{ active: boolean; remainingMinutes?: number }> {
+  // Lee el campo estructurado que el servidor adjunta (var=active/
+  // remaining-seconds en un <x type="result">), no el texto libre -- ver
+  // xmpp-approval-unified-contract/xmpp-elevated-session-command.
+  async getElevatedSessionStatus(targetJid: string): Promise<{ active: boolean; remainingMinutes?: number }> {
     const form: DataForm = { type: 'submit', fields: [{ var: 'mode', value: 'status' }] };
-    const { fields } = await executeCommandWithFields(targetJid, 'approval-bypass', form);
+    const { fields } = await executeCommandWithFields(targetJid, 'elevated', form);
     if (fields.active !== 'true') return { active: false };
     const remainingSeconds = Number.parseInt(fields['remaining-seconds'] ?? '', 10);
     if (!Number.isFinite(remainingSeconds)) return { active: true };
