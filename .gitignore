@@ -28,6 +28,9 @@ android/app/debug.keystore
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+firebase-debug.log
+*-debug.log
+google-services.json
 .DS_Store
 Thumbs.db
 
