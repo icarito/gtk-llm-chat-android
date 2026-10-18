@@ -521,6 +521,30 @@ export function setOmemo2ForTest(e: Omemo2Engine | null) {
 }
 
 const NO_DEVICES: Omemo2Device[] = [];
+const NO_CHANGES: IdentityChange[] = [];
+
+// Cambios de identity key pendientes de revisión, por JID; la referencia sólo cambia al mutar (useSyncExternalStore).
+const pendingChanges = new Map<string, IdentityChange[]>();
+const changeListeners = new Set<() => void>();
+const notifyChanges = () => [...changeListeners].forEach((cb) => cb());
+identityListeners.add((c) => {
+  const bare = bareJid(c.jid);
+  pendingChanges.set(bare, [...(pendingChanges.get(bare) ?? []).filter((x) => x.rid !== c.rid), c]);
+  notifyChanges();
+});
+
+async function setTrustAndClear(jid: string, rid: number, state: TrustState, identity?: string): Promise<boolean> {
+  const ok = engine ? await engine.setTrust(jid, rid, state, identity) : false;
+  const bare = bareJid(jid);
+  const prev = pendingChanges.get(bare) ?? [];
+  const left = prev.filter((x) => x.rid !== rid);
+  if (ok && left.length !== prev.length) {
+    if (left.length) pendingChanges.set(bare, left);
+    else pendingChanges.delete(bare);
+    notifyChanges();
+  }
+  return ok;
+}
 
 /** Fachada pública (XmppService.omemo2). */
 export const omemo2Api = {
@@ -528,8 +552,17 @@ export const omemo2Api = {
     return engine?.ownFingerprint ?? null;
   },
   devices: (jid: string): Omemo2Device[] => engine?.devices(jid) ?? NO_DEVICES,
-  setTrust: (jid: string, rid: number, state: TrustState, identity?: string) =>
-    engine ? engine.setTrust(jid, rid, state, identity) : Promise.resolve(false),
+  setTrust: setTrustAndClear,
+  /** JID propio (bare) del motor, o null si OMEMO 2 no está iniciado. */
+  get ownJid(): string | null {
+    return engine?.ownBare ?? null;
+  },
+  /** Cambios de identity key sin revisar de `jid`; se limpian al fijar la confianza del dispositivo. */
+  identityChanges: (jid: string): IdentityChange[] => pendingChanges.get(bareJid(jid)) ?? NO_CHANGES,
+  subscribeChanges(cb: () => void): () => void {
+    changeListeners.add(cb);
+    return () => changeListeners.delete(cb);
+  },
   isEnabledFor: (jid: string): boolean => engine?.isEnabledFor(jid) ?? true,
   setEnabledFor: (jid: string, enabled: boolean) => engine?.setEnabledFor(jid, enabled) ?? Promise.resolve(),
   /** Vuelve a pedir la device list del contacto (p. ej. al abrir su chat). */
