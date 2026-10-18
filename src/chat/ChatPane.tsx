@@ -299,7 +299,8 @@ function renderEmpty() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   username: { color: Colors.primary, fontSize: 12, fontWeight: '600' },
-  empty: { padding: 24, alignItems: 'center' },
+  // La lista invertida también voltea el ListEmptyComponent: se contra-invierte.
+  empty: { padding: 24, alignItems: 'center', transform: [{ scaleY: -1 }] },
   emptyText: { color: Colors.textDim },
 });
 
