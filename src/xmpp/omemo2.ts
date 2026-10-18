@@ -194,26 +194,43 @@ export class Omemo2Engine {
     await this.publishDevices();
   }
 
-  private pubIq(node: string, itemId: string, payload: Element): Element {
+  private pubIq(node: string, itemId: string, payload: Element, maxItems: string | null): Element {
     return xml('iq', { type: 'set' },
       xml('pubsub', { xmlns: PUBSUB_NS },
         xml('publish', { node }, xml('item', { id: itemId }, payload)),
-        xml('publish-options', {},
+        ...(maxItems === null ? [] : [xml('publish-options', {},
           xml('x', { xmlns: 'jabber:x:data', type: 'submit' },
             xml('field', { var: 'FORM_TYPE', type: 'hidden' },
               xml('value', {}, 'http://jabber.org/protocol/pubsub#publish-options')),
-            field('pubsub#max_items', 'max'),
-            field('pubsub#access_model', 'open')))));
+            field('pubsub#max_items', maxItems),
+            field('pubsub#access_model', 'open')))])));
+  }
+
+  /**
+   * max_items igual que xat (devices 1, bundles 100): el servidor compara las
+   * publish-options con la config del nodo que creó el primer cliente y, si no
+   * coinciden, rechaza con precondition-not-met. En ese caso se publica sin
+   * opciones y el item entra con la config existente del nodo.
+   */
+  private async publish(node: string, itemId: string, payload: Element, maxItems: string): Promise<void> {
+    try {
+      await this.deps.request(this.pubIq(node, itemId, payload, maxItems));
+    } catch (e) {
+      const app = (e as { application?: { name?: string } } | null)?.application;
+      if (app?.name !== 'precondition-not-met') throw e;
+      console.warn('[OMEMO2] publish-options no coinciden con el nodo', node, '— publico sin opciones');
+      await this.deps.request(this.pubIq(node, itemId, payload, null));
+    }
   }
 
   async publishBundle(): Promise<void> {
     const b = this.sm.bundle();
-    await this.deps.request(this.pubIq(NODE_BUNDLES, String(this.deviceId),
+    await this.publish(NODE_BUNDLES, String(this.deviceId),
       xml('bundle', { xmlns: NS_OMEMO2 },
         xml('spk', { id: String(b.spkId) }, b64encode(b.spk)),
         xml('spks', {}, b64encode(b.spkSig)),
         xml('ik', {}, b64encode(b.ik)),
-        xml('prekeys', {}, ...b.prekeys.map((p) => xml('pk', { id: String(p.id) }, b64encode(p.pub)))))));
+        xml('prekeys', {}, ...b.prekeys.map((p) => xml('pk', { id: String(p.id) }, b64encode(p.pub))))), '100');
   }
 
   /**
@@ -228,8 +245,8 @@ export class Omemo2Engine {
 
   private async publishDevices(): Promise<void> {
     const ids = new Set([...(this.state.devices[this.ownBare] ?? []), this.deviceId]);
-    await this.deps.request(this.pubIq(NODE_DEVICES, 'current',
-      xml('devices', { xmlns: NS_OMEMO2 }, ...[...ids].map((id) => xml('device', { id: String(id) })))));
+    await this.publish(NODE_DEVICES, 'current',
+      xml('devices', { xmlns: NS_OMEMO2 }, ...[...ids].map((id) => xml('device', { id: String(id) }))), '1');
     this.state.devices[this.ownBare] = [...ids];
     await this.changed();
   }
@@ -432,6 +449,8 @@ export class Omemo2Engine {
     const dev: DeviceRef = { jid: bareJid(senderJid), rid: sid };
     const id = stanza.attrs.id;
     if (!mine) {
+      console.warn('[OMEMO2] sin clave para este dispositivo', this.deviceId, 'de', dev.jid, dev.rid, 'rids:',
+        header.getChildren('keys').map((k) => `${k.attrs.jid}:${k.getChildren('key').map((x) => x.attrs.rid).join(',')}`).join(' '));
       // Típico en MAM: la copia de lo que enviamos desde este dispositivo no lleva clave para él.
       const cached = id ? await this.deps.store.get(plainKey(dev.jid, id)) : null;
       return cached !== null ? { body: cached, status: 'omemo2' } : quiet('no descifrable en este dispositivo');
@@ -509,6 +528,7 @@ export async function startOmemo2(jid: string): Promise<void> {
   // el bundle con el spk nuevo. Un fallo acá no debe impedir arrancar OMEMO.
   await engine.rotateSpkIfStale().catch((e) => console.warn('[OMEMO2] spk rotation failed', e));
   await engine.publishOwn();
+  console.warn('[OMEMO2] publicado: dispositivo', engine.deviceId, 'de', engine.ownBare);
 }
 
 export function getOmemo2(): Omemo2Engine | null {

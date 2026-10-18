@@ -263,3 +263,28 @@ describe('polyfill de aleatoriedad', () => {
     expect(layout.startsWith("import 'react-native-get-random-values'")).toBe(true);
   });
 });
+
+test('publish-options que no coinciden con el nodo: reintenta sin opciones', async () => {
+  const pep = new FakePep();
+  const p = pep.deps(ALICE);
+  const inner = p.deps.request;
+  const seen: (string | null)[] = [];
+  p.deps.request = async (iq: Element) => {
+    const pubsub = parse(iq.toString()).getChild('pubsub')!;
+    if (pubsub.getChild('publish')) {
+      const max = pubsub.getChild('publish-options')?.getChild('x')?.getChildren('field')
+        .find((f) => f.attrs.var === 'pubsub#max_items')?.getChildText('value') ?? null;
+      seen.push(max);
+      // Nodo creado por otro cliente con max_items=10: Prosody rechaza cualquier otro valor.
+      if (max !== null) throw Object.assign(new Error('conflict'), { application: { name: 'precondition-not-met' } });
+    }
+    return inner(iq);
+  };
+  const engine = await Omemo2Engine.create(p.deps);
+  await engine.publishOwn();
+  expect(seen).toEqual(['100', null, '1', null]);
+  expect(pep.published).toEqual([
+    `${ALICE}|${NODE_BUNDLES}|${engine.deviceId}`,
+    `${ALICE}|${NODE_DEVICES}|current`,
+  ]);
+});

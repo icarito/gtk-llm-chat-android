@@ -52,8 +52,9 @@ const MESSAGE_TEXT_PROPS = { markdown: true } as const;
 const REPLY_SWIPE = { swipe: { isEnabled: true, direction: 'right' as const } };
 const LIST_PROPS = { keyboardShouldPersistTaps: 'handled' as const };
 const AUDIO_RECORDING = { isEnabled: true };
-// FlashList v2 (New Architecture): recicla filas en vez de montarlas todas.
-const USE_FLASH_LIST = true;
+// FlashList v2 no soporta `inverted` (la lib se lo pasa y lo ignora): el chat
+// quedaba al revés, lo nuevo arriba. FlatList invertida, ya ajustada por la lib.
+const USE_FLASH_LIST = false;
 
 const renderUsername = (user: User) => (user.name ? <Text style={styles.username}>{user.name}</Text> : null);
 
