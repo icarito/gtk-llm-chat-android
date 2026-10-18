@@ -272,7 +272,7 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
         identifier: `approval-${index}`,
         buttonTitle: 'node' in action ? action.name : action.label,
         options: {
-          opensAppToForeground: false,
+          opensAppToForeground: true,
           ...((('style' in action) && action.style === 'danger')
             ? { isDestructive: true }
             : {}),
