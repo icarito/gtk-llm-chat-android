@@ -3,6 +3,7 @@ import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } 
 import { Ionicons } from '@expo/vector-icons';
 import type { BubbleProps } from '@kesha-antonov/react-native-chat';
 import { Colors } from '@/constants/theme';
+import { isEncrypted } from '@/xmpp/encryption';
 import { fileNameFromUrl } from './attachments';
 import { ApprovalForMessage } from './ApprovalForMessage';
 import type { ChatMessage } from './toIMessage';
@@ -48,7 +49,7 @@ function MessageExtrasImpl({ jid, message, onRetry }: Props) {
       {(meta.correctedAtMs !== undefined || meta.encryption) ? (
         <View style={styles.badges}>
           {meta.correctedAtMs !== undefined ? <StreamingSpinner correctedAtMs={meta.correctedAtMs} /> : null}
-          {meta.encryption === 'encrypted' ? (
+          {isEncrypted(meta.encryption) ? (
             <Ionicons name="lock-closed" size={11} color={Colors.success} accessibilityLabel="Mensaje cifrado con OMEMO" />
           ) : null}
           {meta.encryption === 'undecryptable' ? (
