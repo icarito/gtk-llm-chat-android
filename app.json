@@ -5,10 +5,7 @@
     "version": "0.1.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
-    "scheme": [
-      "gtk-llm-chat",
-      "org.fuentelibre.gtk_llm_chat"
-    ],
+    "scheme": "gtk-llm-chat",
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "org.fuentelibre.gtk-llm-chat",
