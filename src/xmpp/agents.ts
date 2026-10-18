@@ -14,13 +14,31 @@ export const agents = new AgentStateStore();
  */
 const snapshots = new Map<string, AgentState>();
 
+let agentJids: readonly string[] = [];
+const agentListListeners = new Set<() => void>();
+
 agents.subscribe((jid, state) => {
+  const isNew = !snapshots.has(jid);
   snapshots.set(jid, {
     ...state,
     approvals: new Map(state.approvals),
     timeline: [...state.timeline],
   });
+  if (isNew) {
+    agentJids = Object.freeze([...snapshots.keys()].sort());
+    agentListListeners.forEach((cb) => cb());
+  }
 });
+
+/** JIDs (bare) de los agentes que han publicado telemetría o hooks; snapshot estable. */
+export function getAgentJids(): readonly string[] {
+  return agentJids;
+}
+
+export function subscribeAgentList(cb: () => void): () => void {
+  agentListListeners.add(cb);
+  return () => { agentListListeners.delete(cb); };
+}
 
 export function getAgentSnapshot(jid: string): AgentState | undefined {
   return snapshots.get(jid.split('/')[0] ?? jid);

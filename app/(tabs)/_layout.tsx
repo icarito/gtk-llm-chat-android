@@ -1,18 +1,32 @@
+import type { ColorValue } from 'react-native';
 import { Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors } from '@/constants/theme';
 
-/**
- * There is only one real screen here (the roster); `index` merely redirects to
- * it. A tab bar with one destination — plus a phantom tab expo-router
- * auto-generates for the redirect route — is pure noise, so it stays hidden.
- * Restore `tabBarStyle` and per-screen icons if a second destination lands.
- */
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
+
+const tab = (title: string, icon: IconName) => ({
+  title,
+  tabBarIcon: ({ color, size }: { color: ColorValue; size: number }) => <Ionicons name={icon} size={size} color={color} />,
+});
+
 export default function TabLayout() {
   return (
     <Tabs
+      initialRouteName="xmpp"
       screenOptions={{
         headerShown: false,
-        tabBarStyle: { display: 'none' },
+        tabBarActiveTintColor: Colors.primary,
+        tabBarInactiveTintColor: Colors.muted,
+        tabBarStyle: { backgroundColor: Colors.surface, borderTopColor: Colors.surfaceBorder },
       }}
-    />
+    >
+      {/* `index` sólo redirige a Inicio: sin pestaña. */}
+      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="xmpp" options={tab('Inicio', 'chatbubbles-outline')} />
+      <Tabs.Screen name="flota" options={tab('Flota', 'hardware-chip-outline')} />
+      <Tabs.Screen name="salas" options={tab('Salas', 'people-outline')} />
+      <Tabs.Screen name="yo" options={tab('Yo', 'person-circle-outline')} />
+    </Tabs>
   );
 }

@@ -3,7 +3,8 @@ import { ActivityIndicator, Alert, StyleSheet, Switch, Text, View } from 'react-
 import { Colors } from '@/constants/theme';
 import { useXmpp } from '@/xmpp/XmppContext';
 
-export default function SettingsScreen() {
+/** Cuerpo de ajustes; la pestaña Yo lo reutiliza. */
+export function SettingsBody() {
   const { account, state, omemoEnabled, setOmemoEnabled } = useXmpp();
   const [changingOmemo, setChangingOmemo] = useState(false);
 
@@ -75,3 +76,7 @@ const styles = StyleSheet.create({
   settingHint: { color: Colors.textDim, fontSize: 13, lineHeight: 18 },
   account: { color: Colors.muted, fontSize: 12, marginTop: 3 },
 });
+
+export default function SettingsScreen() {
+  return <SettingsBody />;
+}

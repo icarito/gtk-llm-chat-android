@@ -247,7 +247,7 @@ export async function setBookmark(jid: string, options: BookmarkOptions): Promis
   if (!client) throw new Error('XMPP not connected');
   const room = bareJid(jid);
   await client.iqCaller.request(buildPublishBookmark(room, options), 15000);
-  rooms.patch(room, { bookmarked: true, ...(options.name ? { name: options.name } : {}) }, { name: displayName(room) });
+  rooms.patch(room, { bookmarked: true, autojoin: options.autojoin, ...(options.name ? { name: options.name } : {}) }, { name: displayName(room) });
 }
 
 export async function removeBookmark(jid: string): Promise<void> {
@@ -266,6 +266,7 @@ function applyBookmarks(list: Bookmark[]) {
       b.jid,
       {
         bookmarked: true,
+        autojoin: b.autojoin,
         ...(b.name ? { name: b.name } : {}),
         ...(b.nick && !current?.nick ? { nick: b.nick } : {}),
       },
