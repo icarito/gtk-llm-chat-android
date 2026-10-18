@@ -19,6 +19,15 @@ import type {
 import { dismissNotificationForJid, setConnected } from '@/xmpp/notifications';
 import { getDeviceResourceSuffix } from '@/xmpp/deviceResource';
 import { ForegroundService } from '@/xmpp/ForegroundService';
+import {
+  enqueueActionResponse,
+  flushQueuedActionResponses,
+  setActionQueueRunner,
+} from '@/xmpp/actionQueue';
+import {
+  getForegroundServiceEnabled,
+  setForegroundServiceEnabled,
+} from '@/xmpp/foregroundServicePreference';
 import { XmppHistory } from '@/xmpp/XmppHistory';
 import {
   classifyApprovalCommandResult,
@@ -130,6 +139,12 @@ async function retireClient(client: Client) {
   await client.stop().catch(() => {});
 }
 
+/** El servicio en primer plano es opcional (preferencia persistida, default on). */
+async function startForegroundServiceIfEnabled(jid: string) {
+  if (!(await getForegroundServiceEnabled())) return;
+  await ForegroundService.start(jid);
+}
+
 /**
  * Un fallo de conexión (evento 'error' o rechazo de start()). Un fallo de
  * autenticación detiene el backoff (reintentar con credenciales malas sólo
@@ -156,6 +171,50 @@ function handleConnectionFailure(err: unknown, failed?: Client) {
 attemptHook.fn = async () => {
   if (session.account) await XmppService.reconnectIfNeeded(session.account);
 };
+
+/** Respuesta real a una acción ya resuelta como pendiente (requiere conexión). */
+async function executePendingAction(actionId: string): Promise<void> {
+  const action = getPendingAction(actionId);
+  if (!action) return;
+  if (isPendingActionExpired(action)) {
+    removePendingAction(actionId);
+    return;
+  }
+  // Marcar como submitted inmediatamente: la UI atenúa el botón y la card
+  // se retira visualmente. La corrección XEP-0308 autoritativa o la
+  // clasificación del resultado del IQ limpia el estado persistente.
+  action.submitted = true;
+  notifyPendingActions();
+  try {
+    if (action.kind === 'quick-response') {
+      await sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
+    } else if (action.jid && action.node) {
+      const result = await executeCommand(action.jid, action.node);
+      const outcome = classifyApprovalCommandResult(result);
+      if (outcome === 'expired') {
+        XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId)
+          .catch(() => {});
+        removePendingActionsByMessage(action.conversationJid, action.messageId);
+        return;
+      }
+    }
+  } catch (err) {
+    // El optimismo de `submitted` solo vale mientras el envío siga en pie.
+    // Si executeCommand falla (sin conexión, IQ inválido, timeout de 30 s)
+    // la card se quedaba en "Enviada…" para una decisión que nunca salió, y
+    // sin aviso: la excepción moría como unhandled rejection. Revertimos y
+    // re-lanzamos para que la UI avise, igual que hace GTK en on_error.
+    action.submitted = false;
+    notifyPendingActions();
+    throw err;
+  }
+  await XmppHistory.markResolvedByStanzaId(
+    action.conversationJid,
+    action.messageId,
+  );
+  removePendingActionsByMessage(action.conversationJid, action.messageId);
+  dismissNotificationForJid(action.conversationJid).catch(() => {});
+}
 
 export const XmppService = {
   /** Máquina de estados + fases de arranque observables (futuro checklist de inicio). */
@@ -340,7 +399,7 @@ export const XmppService = {
       // ONLINE llega cuando el roster y la presencia inicial terminan.
       connection.set('SYNCING');
       setConnected();
-      ForegroundService.start(config.jid).catch(() => {});
+      startForegroundServiceIfEnabled(config.jid).catch(() => {});
 
       initOmemoOnOnline(config.jid, client, Boolean(config.omemoEnabled));
 
@@ -471,46 +530,13 @@ export const XmppService = {
   sendTyping,
 
   async answerPendingAction(actionId: string): Promise<void> {
-    const action = getPendingAction(actionId);
-    if (!action) return;
-    if (isPendingActionExpired(action)) {
-      removePendingAction(actionId);
+    // Sin conexión usable la respuesta no se pierde: queda en cola y sale sola
+    // cuando la sesión pase a online (observador al final del módulo).
+    if (!connection.isUsable() || session.client === null) {
+      enqueueActionResponse(actionId);
       return;
     }
-    // Marcar como submitted inmediatamente: la UI atenúa el botón y la card
-    // se retira visualmente. La corrección XEP-0308 autoritativa o la
-    // clasificación del resultado del IQ limpia el estado persistente.
-    action.submitted = true;
-    notifyPendingActions();
-    try {
-      if (action.kind === 'quick-response') {
-        await sendMessage(action.conversationJid, action.value ?? action.label, 'chat');
-      } else if (action.jid && action.node) {
-        const result = await executeCommand(action.jid, action.node);
-        const outcome = classifyApprovalCommandResult(result);
-        if (outcome === 'expired') {
-          XmppHistory.markResolvedByStanzaId(action.conversationJid, action.messageId)
-            .catch(() => {});
-          removePendingActionsByMessage(action.conversationJid, action.messageId);
-          return;
-        }
-      }
-    } catch (err) {
-      // El optimismo de `submitted` solo vale mientras el envío siga en pie.
-      // Si executeCommand falla (sin conexión, IQ inválido, timeout de 30 s)
-      // la card se quedaba en "Enviada…" para una decisión que nunca salió, y
-      // sin aviso: la excepción moría como unhandled rejection. Revertimos y
-      // re-lanzamos para que la UI avise, igual que hace GTK en on_error.
-      action.submitted = false;
-      notifyPendingActions();
-      throw err;
-    }
-    await XmppHistory.markResolvedByStanzaId(
-      action.conversationJid,
-      action.messageId,
-    );
-    removePendingActionsByMessage(action.conversationJid, action.messageId);
-    dismissNotificationForJid(action.conversationJid).catch(() => {});
+    await executePendingAction(actionId);
   },
 
   listAdhocCommands,
@@ -522,6 +548,10 @@ export const XmppService = {
     return connection.isUsable() && session.client !== null;
   },
 
+  /** Preferencia persistida del foreground service de Android. */
+  getForegroundServiceEnabled,
+  setForegroundServiceEnabled,
+
   // ── XEP-0313: MAM history ──
   loadCachedHistory,
   restoreCachedActions,
@@ -529,3 +559,10 @@ export const XmppService = {
   syncHistory,
   loadOlderHistory,
 };
+
+// Cola de respuestas de notificación: se vacía al volver a online.
+setActionQueueRunner(executePendingAction);
+XmppService.onStateChange((state) => {
+  if (state !== 'online') return;
+  flushQueuedActionResponses().catch(() => {});
+});

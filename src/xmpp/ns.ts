@@ -14,7 +14,6 @@ export const PUSH_NS = 'urn:xmpp:push:0';
 // descubrimiento del componente y pedido de slot.
 export const OOB_NS = 'jabber:x:oob';
 export const HTTP_UPLOAD_NS = 'urn:xmpp:http:upload:0';
-export const EXPO_PUSH_SERVICE_JID = 'expo-push.hablar.fuentelibre.org';
 // Telemetría del agente (contexto, tokens, coste, modelo). Va por PEP y no en el
 // <status> de la presencia: el status es texto para humanos —cualquier cliente lo
 // pinta tal cual junto al contacto— y estos números cambian a cada token.
