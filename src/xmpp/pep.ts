@@ -19,6 +19,7 @@ import { NS_HOOKS_ACTIVITY, NS_HOOKS_APPROVAL, NS_HOOKS_PROGRESS } from '@/xmpp/
 import { parseHook } from '@/xmpp/pep/hooks';
 import { parseTelemetry as parseTelemetryFull, type AgentTelemetry } from '@/xmpp/pep/telemetry';
 import { bareJid } from '@/xmpp/parse';
+import { handleFleetEvent } from '@/xmpp/fleet';
 import { usableClient } from '@/xmpp/session';
 
 const HOOK_NODES = [NS_HOOKS_ACTIVITY, NS_HOOKS_APPROVAL, NS_HOOKS_PROGRESS];
@@ -238,6 +239,7 @@ export function handlePubsubEvent(stanza: Element): boolean {
     }
     return true;
   }
+  if (handleFleetEvent(stanza.attrs.from as string | undefined, node, items?.getChildren('item') ?? [])) return true;
   if (HOOK_NODES.includes(node ?? '')) {
     const from = stanza.attrs.from as string | undefined;
     if (!from) return true;
