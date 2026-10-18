@@ -13,7 +13,8 @@
         "NSMicrophoneUsageDescription": "Permite usar el micrófono para grabar notas de voz.",
         "UIBackgroundModes": [
           "remote-notification"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
