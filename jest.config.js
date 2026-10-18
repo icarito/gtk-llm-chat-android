@@ -3,7 +3,7 @@ module.exports = {
   setupFiles: ['<rootDir>/jest.setup.js'],
   // @xmpp/* and ltx ship ESM only — jest-expo's default list doesn't cover them.
   transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|@xmpp/.*|ltx)',
+    'node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|@xmpp/.*|ltx|@kesha-antonov/.*|@shopify/flash-list|react-native-zoom-reanimated)',
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
