@@ -3,13 +3,14 @@ import { Pressable, StyleSheet, Text } from 'react-native';
 import { router } from 'expo-router';
 import { AgentOrb } from '@/components/agent/AgentOrb';
 import { Colors } from '@/constants/theme';
-import { useAgentState, useRoom } from '@/xmpp/XmppContext';
+import { useAgentState, useRoom, useRoomOmemoLabel } from '@/xmpp/XmppContext';
 import { displayName } from '@/xmpp/presence';
 import { useConnectionState, useContact } from './stores';
 
 /** Título del header: orbe del agente (o sala) + nombre. Se suscribe por su cuenta; la pantalla no re-renderiza. */
 function ChatHeaderTitleImpl({ jid }: { jid: string }) {
   const room = useRoom(jid);
+  const omemoLabel = useRoomOmemoLabel(jid);
   const contact = useContact(jid);
   const agent = useAgentState(jid);
   const online = useConnectionState() === 'online';
@@ -35,6 +36,7 @@ function ChatHeaderTitleImpl({ jid }: { jid: string }) {
       <Text style={styles.title} numberOfLines={1}>
         {room ? room.name || displayName(jid) : displayName(jid, contact?.name)}
       </Text>
+      {room && omemoLabel ? <Text style={styles.chip} numberOfLines={1}>{omemoLabel}</Text> : null}
     </Pressable>
   );
 }
@@ -43,5 +45,6 @@ export const ChatHeaderTitle = memo(ChatHeaderTitleImpl);
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  chip: { fontSize: 11, color: Colors.muted },
   title: { fontSize: 17, fontWeight: '600', color: Colors.text, maxWidth: 220 },
 });

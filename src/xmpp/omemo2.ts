@@ -8,6 +8,9 @@
  * Contratos que no se ven en el código:
  *  - El `from` del envelope SCE debe coincidir con el bare JID del remitente de
  *    la stanza (si el envelope lo trae); si no, el mensaje se rechaza.
+ *  - Salas (XEP-0384 §7): sólo no anónimas; los destinatarios son los JIDs reales
+ *    de los miembros y el envelope SCE lleva la sala como `to`. El `from` del
+ *    envelope se compara con el JID real resuelto del remitente (no con la sala).
  *  - BTBV: un dispositivo nuevo es 'blind' mientras ningún dispositivo de ese
  *    JID esté 'verified'; después los nuevos nacen 'distrusted' y ni se les
  *    cifra ni se muestran sus mensajes. Un cambio de identity key de un rid
@@ -365,6 +368,13 @@ export class Omemo2Engine {
     return this.isEnabledFor(bare) && (await this.peerDevices(bare)).length > 0;
   }
 
+  /** True si el cifrado está activo para `room` y algún peer publica dispositivos OMEMO 2. */
+  async canEncryptGroup(room: string, peers: string[]): Promise<boolean> {
+    if (!this.isEnabledFor(room)) return false;
+    const lists = await Promise.all(peers.filter((j) => j !== this.ownBare).map((j) => this.peerDevices(j).catch(() => [])));
+    return lists.some((l) => l.length > 0);
+  }
+
   private async ensureSession(dev: DeviceRef): Promise<boolean> {
     const t = this.state.trust[tk(dev.jid, dev.rid)];
     if (t?.trusted === 'distrusted') return false;
@@ -395,6 +405,42 @@ export class Omemo2Engine {
   }
 
   /**
+   * Cifra `body` para los dispositivos de `peers` (+ nuestros otros dispositivos)
+   * en UN <encrypted>. `skipped` = peers sin dispositivos OMEMO 2 o sin ninguno
+   * utilizable. null si ningún peer tiene dispositivos; lanza si los tienen pero
+   * con ninguno se pudo cifrar. `envTo` es el `to` del envelope SCE.
+   */
+  private async encryptFor(peers: string[], envTo: string, id: string, body: string, tolerant: boolean) {
+    const withDevices: string[] = [];
+    const skipped: string[] = [];
+    for (const peer of peers) {
+      // En sala un peer con la device list inaccesible se reporta, no aborta el envío.
+      const ids = await this.peerDevices(peer).catch((e) => { if (!tolerant) throw e; return []; });
+      (ids.length ? withDevices : skipped).push(peer);
+    }
+    if (!withDevices.length) return null;
+    const targets: DeviceRef[] = [
+      ...withDevices.flatMap((jid) => this.state.devices[jid].map((rid) => ({ jid, rid }))),
+      ...(this.state.devices[this.ownBare] ?? []).filter((rid) => rid !== this.deviceId).map((rid) => ({ jid: this.ownBare, rid })),
+    ];
+    const ready: DeviceRef[] = [];
+    for (const dev of targets) if (await this.ensureSession(dev)) ready.push(dev);
+    const usable = withDevices.filter((jid) => ready.some((d) => d.jid === jid));
+    if (!usable.length) throw new Error(`omemo2: sin dispositivos utilizables para ${withDevices.join(', ')}`);
+    skipped.push(...withDevices.filter((jid) => !usable.includes(jid)));
+    const msg = await this.sm.encryptForDevices(ready, buildEnvelope(body, { to: envTo, from: this.ownBare }));
+    await Promise.all(ready.map((d) => this.kt.reset(d)));
+    await this.deps.store.set(plainKey(this.ownBare, id), body); // la copia MAM propia no lleva clave para este dispositivo
+    const children = [
+      this.encryptedElement(msg, true),
+      xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: NS_OMEMO2, name: 'OMEMO 2' }),
+      xml('body', {}, OMEMO2_FALLBACK_BODY),
+      xml('store', { xmlns: 'urn:xmpp:hints' }),
+    ];
+    return { children, skipped };
+  }
+
+  /**
    * Hijos de <message> para un mensaje 1:1 cifrado (encrypted + EME + body de
    * respaldo + hint store), o null si OMEMO 2 no aplica (desactivado para el
    * contacto o sin dispositivos OMEMO 2): el llamador cae a legacy/texto plano.
@@ -403,22 +449,18 @@ export class Omemo2Engine {
   async encryptOutgoing(to: string, id: string, body: string): Promise<Element[] | null> {
     const peer = bareJid(to);
     if (!(await this.canEncryptTo(peer))) return null;
-    const targets: DeviceRef[] = [
-      ...this.state.devices[peer].map((rid) => ({ jid: peer, rid })),
-      ...(this.state.devices[this.ownBare] ?? []).filter((rid) => rid !== this.deviceId).map((rid) => ({ jid: this.ownBare, rid })),
-    ];
-    const ready: DeviceRef[] = [];
-    for (const dev of targets) if (await this.ensureSession(dev)) ready.push(dev);
-    if (!ready.some((d) => d.jid === peer)) throw new Error(`omemo2: sin dispositivos utilizables para ${peer}`);
-    const msg = await this.sm.encryptForDevices(ready, buildEnvelope(body, { to: peer, from: this.ownBare }));
-    await Promise.all(ready.map((d) => this.kt.reset(d)));
-    await this.deps.store.set(plainKey(this.ownBare, id), body); // la copia MAM propia no lleva clave para este dispositivo
-    return [
-      this.encryptedElement(msg, true),
-      xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: NS_OMEMO2, name: 'OMEMO 2' }),
-      xml('body', {}, OMEMO2_FALLBACK_BODY),
-      xml('store', { xmlns: 'urn:xmpp:hints' }),
-    ];
+    return (await this.encryptFor([peer], peer, id, body, false))!.children;
+  }
+
+  /**
+   * Igual para una sala (XEP-0384 §7): `recipients` son los bare JIDs reales de
+   * sus miembros y el envelope SCE lleva la sala como `to`. `skipped` lista los
+   * que quedaron sin clave (sin OMEMO 2 o sin dispositivo utilizable).
+   */
+  async encryptOutgoingGroup(room: string, recipients: string[], id: string, body: string): Promise<{ children: Element[]; skipped: string[] } | null> {
+    if (!this.isEnabledFor(room)) return null;
+    const peers = [...new Set(recipients.map(bareJid))].filter((j) => j !== this.ownBare);
+    return this.encryptFor(peers, bareJid(room), id, body, true);
   }
 
   private async sendKeyTransport(dev: DeviceRef): Promise<void> {

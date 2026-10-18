@@ -6,6 +6,7 @@ import { isNotificationGraceActive, notifyXmppMessage } from '@/xmpp/notificatio
 import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import { getOmemo2 } from '@/xmpp/omemo2';
+import { omemoRoomRecipients } from '@/xmpp/muc';
 import { XmppHistory } from '@/xmpp/XmppHistory';
 import { expireMatchingQuickResponses, resolveApprovalActionsFromOwnMessage } from '@/xmpp/actions';
 import { CHAT_STATES_NS } from '@/xmpp/ns';
@@ -47,6 +48,8 @@ export function updateOutboundEncryptionStatus(
  * OMEMO 2 y el cifrado está activo para él) > OMEMO legacy (Android; falla
  * cerrado si no hay dispositivos) > null = texto plano. El llamador marca el
  * estado visible ('none') cuando devuelve null.
+ * Salas: OMEMO 2 sólo si la sala es no anónima (ver omemoRoomRecipients); si no,
+ * texto plano, nunca error. Con motor OMEMO 2 no se usa el legacy en salas.
  */
 async function encryptOutbound(
   to: string,
@@ -58,6 +61,14 @@ async function encryptOutbound(
     const engine = getOmemo2();
     const children = engine ? await engine.encryptOutgoing(to, id, body) : null;
     if (children) return { children, status: 'omemo2' };
+  } else {
+    const engine = getOmemo2();
+    if (engine) {
+      const peers = await omemoRoomRecipients(to);
+      const res = peers ? await engine.encryptOutgoingGroup(to, peers, id, body) : null;
+      if (rooms.get(to)) rooms.patch(to, { omemoSkipped: res?.skipped.length ?? 0 });
+      return res ? { children: res.children, status: 'omemo2' } : null;
+    }
   }
   const legacyOn = session.account?.omemoEnabled && Omemo.isEnabled()
     && (type === 'groupchat' || (getOmemo2()?.isEnabledFor(to) ?? true));

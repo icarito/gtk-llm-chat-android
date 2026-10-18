@@ -172,6 +172,16 @@ export function useRoom(jid: string): XmppRoom | undefined {
   return useSyncExternalStore(roomsStore.subscribe, () => roomsStore.get(jid));
 }
 
+/** Estado de cifrado de una sala para el header (string: re-render sólo si el texto cambia). undefined = aún sin consultar. */
+export function useRoomOmemoLabel(jid: string): string | undefined {
+  return useSyncExternalStore(roomsStore.subscribe, () => {
+    const r = roomsStore.get(jid);
+    if (!r || r.nonAnonymous === undefined) return undefined;
+    if (!r.nonAnonymous) return `Sin cifrar: ${r.omemoUnavailableReason ?? 'sala anónima'}`;
+    return r.omemoSkipped ? `OMEMO 2 · ${r.omemoSkipped} sin OMEMO 2` : 'Cifrado OMEMO 2';
+  });
+}
+
 /** Todas las salas conocidas (marcadores + unidas). */
 export function useRooms(): readonly XmppRoom[] {
   return useSyncExternalStore(roomsStore.subscribe, roomsStore.getAll);

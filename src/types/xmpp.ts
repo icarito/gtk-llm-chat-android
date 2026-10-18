@@ -103,6 +103,13 @@ export interface XmppRoom {
   /** Nuestro rol/afiliación, tomados de la presencia propia (110). */
   role: string;
   affiliation: string;
+  /** disco#info de la sala (XEP-0045 muc_nonanonymous / muc_membersonly); undefined hasta consultarla. */
+  nonAnonymous?: boolean;
+  membersOnly?: boolean;
+  /** Por qué no hay OMEMO 2 en la sala (para la UI); sólo con nonAnonymous === false. */
+  omemoUnavailableReason?: string;
+  /** Destinatarios que quedaron sin clave en el último envío cifrado. */
+  omemoSkipped?: number;
 }
 
 /** Invitación a sala pendiente de aceptar/rechazar (mediada XEP-0045 o directa XEP-0249). */

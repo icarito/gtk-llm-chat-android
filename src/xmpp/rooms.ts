@@ -16,7 +16,7 @@ import { displayName } from '@/xmpp/presence';
 import { session, usableClient } from '@/xmpp/session';
 import type { StanzaCtx } from '@/xmpp/session';
 import { contacts, invites, rooms } from '@/xmpp/store';
-import { trackMucOccupant } from '@/xmpp/muc';
+import { ensureRoomInfo, resetRoomOmemo, trackMucOccupant } from '@/xmpp/muc';
 import { getAgentTelemetry } from '@/xmpp/pep';
 import {
   NS_BOOKMARKS,
@@ -46,6 +46,7 @@ export async function joinRoom(jid: string, nick?: string, opts: JoinOptions = {
   if (!client) throw new Error('XMPP not connected');
   const room = bareJid(jid);
   const chosen = nick || rooms.get(room)?.nick || defaultNick();
+  resetRoomOmemo(room); // disco#info y afiliaciones se piden de nuevo en cada join
   rooms.patch(
     room,
     { nick: chosen, state: 'joining', error: undefined, occupants: {} },
@@ -175,6 +176,7 @@ export function handleMucPresence(stanza: Element, ctx: StanzaCtx): boolean {
       : { occupants },
     base,
   );
+  if (muc.self) void ensureRoomInfo(bare); // elegibilidad OMEMO 2 visible en el header sin esperar al primer envío
   if (!muc.self && !occupant.isAgent) detectAgent(stanza, ctx, bare, muc.nick, muc.realJid);
   return true;
 }

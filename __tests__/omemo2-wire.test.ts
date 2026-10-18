@@ -15,10 +15,17 @@ import {
   type IdentityChange,
 } from '@/xmpp/omemo2';
 import { routeStanza } from '@/xmpp/router';
-import { messages } from '@/xmpp/store';
+import { messages, rooms } from '@/xmpp/store';
+import { resetRoomOmemo } from '@/xmpp/muc';
+import { sendMessage } from '@/xmpp/messages';
 import { resetInbound } from '@/xmpp/inbound';
 import type { StanzaCtx } from '@/xmpp/session';
 
+let mockClient: unknown = null;
+jest.mock('@/xmpp/session', () => ({
+  ...jest.requireActual('@/xmpp/session'),
+  usableClient: () => mockClient,
+}));
 jest.mock('expo-sqlite', () => ({}));
 jest.mock('expo-secure-store', () => ({}));
 jest.mock('@/xmpp/xep-0384', () => ({ Omemo: { isEnabled: () => false } }));
@@ -93,6 +100,9 @@ beforeEach(() => {
   messages.reset();
   resetInbound();
   setOmemo2ForTest(null);
+  rooms.reset();
+  resetRoomOmemo();
+  mockClient = null;
 });
 
 describe('OMEMO 2 sobre stanzas', () => {
@@ -246,6 +256,139 @@ describe('OMEMO 2 sobre stanzas', () => {
     expect(alice.engine.isEnabledFor(BOB)).toBe(false);
     expect(await alice.engine.encryptOutgoing(BOB, 'm', 'x')).toBeNull();
     expect(bob.engine.isEnabledFor(ALICE)).toBe(true);
+  });
+});
+
+const ROOM = 'sala@muc.x.org';
+const CAROL = 'carol@x.org';
+const DAVE = 'dave@x.org'; // sin OMEMO 2
+
+/** Sala unida desde la perspectiva de `ownNick`; `occ` = nick -> JID real. */
+function setRoom(ownNick: string, occ: Record<string, string>) {
+  rooms.patch(ROOM, {
+    nick: ownNick, state: 'joined',
+    occupants: Object.fromEntries(Object.entries(occ).map(([nick, jid]) => [nick, { nick, realJid: `${jid}/phone`, role: 'participant', affiliation: 'member', isAgent: false }])),
+  }, {});
+}
+
+/** Cliente falso: disco#info de la sala, listas de afiliación y envíos capturados. */
+function roomClient(nonAnonymous: boolean, members: string[] = []) {
+  const sent: Element[] = [];
+  mockClient = {
+    send: async (s: Element) => { sent.push(parse(s.toString())); },
+    iqCaller: {
+      request: async (iq: Element) => {
+        const query = iq.getChild('query')!;
+        if (query.attrs.xmlns === 'http://jabber.org/protocol/disco#info') {
+          return xml('iq', { type: 'result' }, xml('query', { xmlns: query.attrs.xmlns },
+            ...(nonAnonymous ? [xml('feature', { var: 'muc_nonanonymous' })] : [xml('feature', { var: 'muc_semianonymous' })]),
+            xml('feature', { var: 'muc_membersonly' })));
+        }
+        const aff = query.getChild('item')!.attrs.affiliation;
+        if (aff === 'owner') throw Object.assign(new Error('forbidden'), { condition: 'forbidden' });
+        return xml('iq', { type: 'result' }, xml('query', { xmlns: query.attrs.xmlns },
+          ...(aff === 'member' ? members.map((jid) => xml('item', { jid, affiliation: 'member' })) : [])));
+      },
+    },
+  };
+  return sent;
+}
+
+/** La stanza de sala que el servidor reparte a los demás (from = sala/nick). */
+const roomWire = (sent: Element, nick: string, to: string, extra: Element[] = []): Element => {
+  const s = parse(sent.toString());
+  s.attrs.from = `${ROOM}/${nick}`;
+  s.attrs.to = `${to}/phone`;
+  s.children.push(...extra);
+  return parse(s.toString());
+};
+
+describe('OMEMO 2 en salas MUC', () => {
+  test('ida y vuelta Alice -> Bob y Carol en sala no anónima; el eco propio no duplica y un sin-OMEMO se reporta', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    const bob = await party(pep, BOB);
+    const carol = await party(pep, CAROL);
+    const sent = roomClient(true, [CAROL, DAVE]);
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, bob: BOB });
+    const id = await sendMessage(ROOM, 'hola sala', 'groupchat');
+
+    expect(sent).toHaveLength(1);
+    const out = sent[0];
+    expect(out.toString()).not.toContain('hola sala');
+    const keyed = out.getChild('encrypted')!.getChild('header')!.getChildren('keys').map((k) => k.attrs.jid).sort();
+    expect(keyed).toEqual([BOB, CAROL]); // Dave sin dispositivos; Alice sin otros dispositivos
+    expect(rooms.get(ROOM)).toMatchObject({ nonAnonymous: true, membersOnly: true, omemoSkipped: 1 });
+    expect(messages.getConversation(ROOM)[0]).toMatchObject({ body: 'hola sala', encryptionStatus: 'omemo2', sendState: 'sent' });
+
+    // Bob y Carol descifran la MISMA stanza (el eco al remitente real sale del mapa de ocupantes).
+    for (const [who, nick] of [[bob, 'bob'], [carol, 'carol']] as const) {
+      messages.reset(); resetInbound();
+      setOmemo2ForTest(who.engine);
+      setRoom(nick, { alice: ALICE, bob: BOB, carol: CAROL });
+      await routeStanza(roomWire(out, 'alice', who === bob ? BOB : CAROL), ctx(who === bob ? BOB : CAROL));
+      expect(messages.getConversation(ROOM)).toHaveLength(1);
+      expect(messages.getConversation(ROOM)[0]).toMatchObject({ body: 'hola sala', encryptionStatus: 'omemo2', senderNick: 'alice' });
+    }
+
+    // Eco de la sala a Alice: se muestra descifrado desde el respaldo y no crea otra burbuja.
+    messages.reset(); resetInbound();
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, bob: BOB });
+    const echo = roomWire(out, 'alice', ALICE);
+    expect((await decryptStanzaIfEncrypted(echo, `${ROOM}/alice`)).decryptedBody).toBe('hola sala');
+    await routeStanza(echo, ctx(ALICE));
+    expect(messages.getConversation(ROOM)).toHaveLength(0);
+    expect(id).toBe(out.attrs.id);
+  });
+
+  test('sala anónima: texto plano, sin lanzar, con motivo visible', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    await party(pep, BOB);
+    const sent = roomClient(false);
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, bob: BOB });
+    await expect(sendMessage(ROOM, 'a la vista', 'groupchat')).resolves.toBeTruthy();
+    expect(sent[0].getChildText('body')).toBe('a la vista');
+    expect(sent[0].getChild('encrypted')).toBeUndefined();
+    expect(rooms.get(ROOM)).toMatchObject({ nonAnonymous: false, omemoUnavailableReason: 'sala anónima' });
+  });
+
+  test('remitente no resoluble: marcador honesto; en MAM se usa muc#user; from distinto se rechaza', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    const bob = await party(pep, BOB);
+    const carol = await party(pep, CAROL);
+    const sent = roomClient(true, [CAROL]);
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, bob: BOB });
+    await sendMessage(ROOM, 'quién soy', 'groupchat');
+    const out = sent[0];
+
+    setOmemo2ForTest(bob.engine);
+    setRoom('bob', { bob: BOB }); // Bob no conoce al ocupante `alice`
+    const r = await decryptStanzaIfEncrypted(roomWire(out, 'alice', BOB), `${ROOM}/alice`);
+    expect(r).toMatchObject({ decryptedBody: '🔒 [OMEMO 2: remitente desconocido en la sala]', encryptionStatus: 'undecryptable' });
+
+    const item = xml('x', { xmlns: 'http://jabber.org/protocol/muc#user' }, xml('item', { jid: `${ALICE}/phone`, affiliation: 'member' }));
+    const mam = await decryptStanzaIfEncrypted(roomWire(out, 'alice', BOB, [item]), `${ROOM}/alice`, false);
+    expect(mam).toMatchObject({ decryptedBody: 'quién soy', encryptionStatus: 'omemo2' });
+
+    // Envelope con to=sala aceptado arriba; un remitente real distinto del `from` firmado se rechaza.
+    const wrong = await carol.engine.decrypt(roomWire(out, 'alice', CAROL), 'mallory@x.org');
+    expect(wrong.body).toContain('remitente no coincide');
+  });
+
+  test('encryptOutgoingGroup: null sin destinatarios con OMEMO 2; lanza si tienen dispositivos pero ninguno sirve', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    expect(await alice.engine.encryptOutgoingGroup(ROOM, [DAVE], 'g0', 'x')).toBeNull();
+    const bob = await party(pep, BOB);
+    await alice.engine.encryptOutgoingGroup(ROOM, [BOB], 'g1', 'x');
+    await alice.engine.setTrust(BOB, bob.engine.deviceId, 'distrusted');
+    await expect(alice.engine.encryptOutgoingGroup(ROOM, [BOB], 'g2', 'x')).rejects.toThrow('sin dispositivos utilizables');
   });
 });
 

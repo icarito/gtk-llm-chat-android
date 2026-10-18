@@ -7,6 +7,7 @@ import { DISCO_INFO_NS, DISCO_ITEMS_NS, HTTP_UPLOAD_NS, OOB_NS } from '@/xmpp/ns
 import { session } from '@/xmpp/session';
 import { addMessageToMap } from '@/xmpp/messages';
 import { getOmemo2 } from '@/xmpp/omemo2';
+import { omemoRoomRecipients } from '@/xmpp/muc';
 import { cacheSentMedia } from '@/xmpp/media';
 import { b64decode, buildAesgcmUrl, encryptMedia } from '@/omemo2';
 
@@ -138,9 +139,10 @@ export async function sendFile(
   const host = await resolveUploadHost();
   if (!host) throw new Error('El servidor no tiene servicio de subida (XEP-0363)');
 
-  // Sólo 1:1: en groupchat no hay OMEMO 2 (el cifrado de archivos no aplica).
-  const omemo2 = type === 'chat' ? getOmemo2() : null;
-  const omemo2Eligible = omemo2 ? await omemo2.canEncryptTo(to) : false;
+  // 1:1 con dispositivos OMEMO 2, o sala no anónima con algún miembro con OMEMO 2.
+  const omemo2 = getOmemo2();
+  const roomPeers = omemo2 && type === 'groupchat' ? await omemoRoomRecipients(to) : null;
+  const omemo2Eligible = omemo2 ? (type === 'groupchat' ? roomPeers !== null : await omemo2.canEncryptTo(to)) : false;
   // RN: el constructor de Blob no acepta ArrayBuffer; el ciphertext sube como Uint8Array.
   let uploadBody: Blob | Uint8Array = blob;
   let uploadSize = blob.size;
@@ -170,7 +172,9 @@ export async function sendFile(
 
   if (omemo2 && media) {
     const aesgcmUrl = buildAesgcmUrl(slot.getUrl, media.key, media.iv);
-    const encryptedChildren = await omemo2.encryptOutgoing(to, id, aesgcmUrl);
+    const encryptedChildren = roomPeers
+      ? (await omemo2.encryptOutgoingGroup(to, roomPeers, id, aesgcmUrl))?.children
+      : await omemo2.encryptOutgoing(to, id, aesgcmUrl);
     if (!encryptedChildren) {
       throw new Error(`No hay dispositivos OMEMO 2 utilizables para ${to}`);
     }
@@ -185,7 +189,7 @@ export async function sendFile(
       body: aesgcmUrl,
       timestamp,
       direction: 'out',
-      isGroup: false,
+      isGroup: type === 'groupchat',
       wasEncrypted: true,
       encryptionStatus: 'omemo2',
     });
@@ -197,7 +201,7 @@ export async function sendFile(
     return aesgcmUrl;
   }
 
-  if (session.account?.omemoEnabled && Omemo.isEnabled()) {
+  if (session.account?.omemoEnabled && Omemo.isEnabled() && !(omemo2 && type === 'groupchat')) {
     const isGroup = type === 'groupchat';
     const richPlaintext = JSON.stringify({ body: slot.getUrl, oobUrl: slot.getUrl });
     const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, richPlaintext, isGroup);

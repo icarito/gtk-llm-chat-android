@@ -2,6 +2,7 @@ import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import { bareJid } from '@/xmpp/parse';
 import { getOmemo2 } from '@/xmpp/omemo2';
+import { resolveMucSender } from '@/xmpp/muc';
 import { materializeAesgcm } from '@/xmpp/media';
 import { AESGCM_SCHEME } from '@/omemo2';
 
@@ -23,7 +24,11 @@ export async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string,
         return { decryptedBody: '🔒 [Mensaje OMEMO 2: activa el cifrado para descifrarlo]', wasEncrypted: true, encryptionStatus: 'undecryptable' as const };
       }
     } else {
-      const r = await engine.decrypt(stanza, bareJid(fromJid), live);
+      // En una sala `fromJid` es room/nick: el remitente real sale del mapa de ocupantes o de muc#user.
+      const sender = stanza.attrs.type === 'groupchat' ? resolveMucSender(stanza, engine.ownBare, live) : bareJid(fromJid);
+      const r = sender
+        ? await engine.decrypt(stanza, sender, live)
+        : { body: '🔒 [OMEMO 2: remitente desconocido en la sala]', status: 'undecryptable' as const };
       if (r.status === 'omemo2' || !legacyEncrypted) {
         const attachmentLocalUri = r.body.startsWith(AESGCM_SCHEME)
           ? await materializeAesgcm(r.body)
