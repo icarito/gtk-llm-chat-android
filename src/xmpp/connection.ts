@@ -103,8 +103,13 @@ export class Connection {
     this.emit();
   }
 
-  resetBackoff() {
+  /** Cancela el reintento pendiente sin tocar el contador (un connect en curso ya lo reemplaza). */
+  cancelPendingRetry() {
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+  }
+
+  resetBackoff() {
+    this.cancelPendingRetry();
     this.retryAttempt = 0;
   }
 

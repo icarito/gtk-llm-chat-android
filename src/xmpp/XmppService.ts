@@ -248,7 +248,10 @@ export const XmppService = {
     // Después del disconnect de arriba, que lo deja puesto: conectar es la
     // intención contraria y reabre la puerta al auto-retry.
     connection.resume();
-    connection.resetBackoff();
+    // Sólo el timer: el contador del backoff lo resetea llegar a SYNCING/ONLINE.
+    // Resetearlo aquí (como hacía stopRetry) lo dejaba siempre en 5s, porque
+    // cada intento automático pasa por este mismo connect().
+    connection.cancelPendingRetry();
 
     connection.set('CONNECTING');
     connection.step('tls', 'active');
