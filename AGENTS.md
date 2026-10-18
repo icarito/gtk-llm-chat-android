@@ -8,10 +8,16 @@ OpenClaw; no hay backend propio.
 
 ```
 app/                       → Expo Router (rutas por fichero)
-  (tabs)/xmpp.tsx          → Roster: contactos, presencia, avatares
-  xmpp-chat/[jid].tsx      → Pantalla de chat
+  (tabs)/                  → Inicio (roster+filtros+invitaciones) · Flota · Salas · Yo
+  xmpp-chat/[jid].tsx      → Pantalla de chat (composición; la UI vive en src/chat/)
+  room/[jid].tsx           → Ocupantes y moderación de una sala
+  encryption/[jid].tsx     → Dispositivos OMEMO 2, huellas y confianza
   _layout.tsx              → Layout raíz: fuentes, notificaciones, ruteo de push
 src/
+  chat/                    → UI de chat sobre @kesha-antonov/react-native-chat
+                             (adaptador toIMessage, ChatPane, autocompletado)
+  components/              → agent/ (aprobaciones, mind panel), nav/, encryption/
+  omemo2/                  → Núcleo OMEMO 2 puro (X3DH, Double Ratchet, XEP-0454)
   xmpp/
     XmppService.ts         → Conexión única, viva todo el ciclo de la app.
                              Los componentes se suscriben; nunca son dueños de
@@ -46,6 +52,13 @@ o `node-polyfills/crypto` instala un `getRandomValues` basado en Math.random.
 - `@xmpp/client` sobre WebSocket
 
 ## Trampas que ya nos han mordido
+
+- **`<Chat>` de react-native-chat reenvía TODAS sus props a cada fila de la
+  lista**, que se memoiza por referencia. Cualquier prop que cambie en cada
+  render (un objeto literal, un callback no memoizado, el texto del
+  composer) re-renderiza todas las filas. Las props van como constantes de
+  módulo o memoizadas. El borrador del composer vive en un store externo
+  (`SuggestionBar.tsx`), no en el estado de `ChatPane`.
 
 - **`android/` e `ios/` NO se versionan (CNG).** Se regeneran con
   `npx expo prebuild --clean --no-install`. Nunca los edites a mano: el cambio
