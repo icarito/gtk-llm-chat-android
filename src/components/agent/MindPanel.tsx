@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/theme';
 import type { HookEvent } from '@/xmpp/pep/hooks';
 import { formatCost, formatTool, type AgentTelemetry } from '@/xmpp/pep/telemetry';
@@ -17,6 +17,8 @@ export interface MindPanelProps {
   timeline: HookEvent[];
   commands: MindCommand[];
   onCommand: (node: string) => void;
+  /** brain-url https del agente (fleet snapshot); sin él no hay botón. */
+  brainUrl?: string | null;
   /** Reloj inyectable para los tiempos relativos. */
   nowMs?: number;
 }
@@ -91,6 +93,7 @@ export function MindPanel({
   commands,
   onCommand,
   nowMs,
+  brainUrl,
 }: MindPanelProps) {
   const [armed, setArmed] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -166,6 +169,11 @@ export function MindPanel({
         </View>
       ) : null}
 
+      {brainUrl ? (
+        <Pressable onPress={() => Linking.openURL(brainUrl)} accessibilityRole="link">
+          <Text style={styles.value}>Abrir el cerebro del agente</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.chips}>{chips('safe')}</View>
       <View style={styles.chips}>{chips('maintenance')}</View>
     </View>

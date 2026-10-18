@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Switch, Text, ToastAndroid, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Alert, Linking, Platform, Pressable, StyleSheet, Switch, Text, ToastAndroid, View } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { AgentActivityIndicator } from '@/components/agent/AgentActivityIndicator';
 import { MindPanel, type MindCommand } from '@/components/agent/MindPanel';
 import { Colors } from '@/constants/theme';
+import { fetchFleet, useBrainUrl } from '@/xmpp/fleet';
 import { useAgentState, useRoom } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { presenceColor } from '@/xmpp/presence';
@@ -55,12 +56,13 @@ function AgentBarInner({ jid }: { jid: string }) {
   const agent = useAgentState(jid);
   const contact = useContact(jid);
   const online = useConnectionState() === 'online';
+  const brain = useBrainUrl(jid);
   const [commands, setCommands] = useState<MindCommand[]>([]);
 
   // Los eventos PEP sólo llegan cuando el agente publica: pedir el valor actual
   // al enfocar y al (re)conectar (ver AGENTS.md).
   useFocusEffect(useCallback(() => {
-    if (online) XmppService.fetchAgentTelemetry(jid);
+    if (online) { XmppService.fetchAgentTelemetry(jid); void fetchFleet(); }
   }, [jid, online]));
 
   useEffect(() => {
@@ -98,6 +100,11 @@ function AgentBarInner({ jid }: { jid: string }) {
         <View style={[styles.dot, { backgroundColor: presenceColor(contact?.presence ?? 'offline') }]} />
         <Text style={styles.model} numberOfLines={1}>{t?.model?.split('/').pop() ?? contact?.status ?? ''}</Text>
         <View style={styles.spacer} />
+        {brain ? (
+          <Pressable onPress={() => Linking.openURL(brain)} accessibilityRole="link" accessibilityLabel="Abrir el cerebro del agente" hitSlop={8}>
+            <MaterialCommunityIcons name="brain" size={18} color={Colors.primary} />
+          </Pressable>
+        ) : null}
         <AgentActivityIndicator
           activity={agent?.activity}
           progressState={agent?.progress?.state}
@@ -117,6 +124,7 @@ function AgentBarInner({ jid }: { jid: string }) {
             timeline={timeline}
             commands={commands}
             onCommand={onCommand}
+            brainUrl={brain}
           />
           <ElevatedSwitch jid={jid} online={online} />
         </View>
