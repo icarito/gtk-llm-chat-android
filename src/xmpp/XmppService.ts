@@ -56,6 +56,7 @@ import {
   telemetryListeners,
   type AgentTelemetryListener,
 } from '@/xmpp/pep';
+import { agents, approvalForStanza } from '@/xmpp/agents';
 import { pingServer, startPing, stopPing } from '@/xmpp/ping';
 import { enableExpoPushIfAvailable, reportPushFailure } from '@/xmpp/push';
 import { fetchRosterThenAnnounce, resetRoster } from '@/xmpp/roster';
@@ -213,6 +214,10 @@ export const XmppService = {
   sendChatState,
   retryMessage,
   getAgentTelemetry,
+
+  /** Store de telemetría + hooks PEP por agente (ver agents.ts). */
+  agents,
+  approvalForStanza,
 
   onTelemetry(fn: AgentTelemetryListener) {
     telemetryListeners.add(fn);

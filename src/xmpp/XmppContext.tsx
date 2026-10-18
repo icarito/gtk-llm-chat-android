@@ -4,6 +4,8 @@ import { AppState } from 'react-native';
 import { XmppService } from '@/xmpp/XmppService';
 import { connection } from '@/xmpp/session';
 import { contacts as contactsStore, messages as messagesStore, pendingActions as pendingStore } from '@/xmpp/store';
+import { getAgentSnapshot, subscribeAgent } from '@/xmpp/agents';
+import type { AgentState } from '@/xmpp/pep/agentState';
 import { PushStatus, type XmppPushStatus } from '@/xmpp/pushStatus';
 import { useXmppAccount } from '@/hooks/useXmppAccount';
 import type { XmppContact, XmppConnectionState, XmppMessage, XmppPendingAction } from '@/types/xmpp';
@@ -154,5 +156,13 @@ export function useConversation(jid: string): readonly XmppMessage[] {
   return useSyncExternalStore(
     useCallback((cb: () => void) => messagesStore.subscribe(jid, cb), [jid]),
     () => messagesStore.getConversation(jid),
+  );
+}
+
+/** Telemetría + hooks del agente `jid`; `undefined` si no ha publicado nada (usar agentStatus.ts). */
+export function useAgentState(jid: string): AgentState | undefined {
+  return useSyncExternalStore(
+    useCallback((cb: () => void) => subscribeAgent(jid, cb), [jid]),
+    () => getAgentSnapshot(jid),
   );
 }

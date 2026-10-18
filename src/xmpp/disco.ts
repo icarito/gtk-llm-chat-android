@@ -8,9 +8,8 @@ import {
   CAPS_NODE,
   CHAT_STATES_NS,
   DISCO_INFO_NS,
-  LEGACY_TELEMETRY_NODE,
-  TELEMETRY_NODE,
 } from '@/xmpp/ns';
+import { capsNotifyFeatures } from '@/xmpp/pep/namespaces';
 import type { StanzaCtx } from '@/xmpp/session';
 
 /**
@@ -23,15 +22,15 @@ import type { StanzaCtx } from '@/xmpp/session';
  */
 const CAPS_FEATURES = [
   DISCO_INFO_NS,
-  `${TELEMETRY_NODE}+notify`,
-  `${LEGACY_TELEMETRY_NODE}+notify`,
+  // Telemetría (OpenClaw + legacy) y hooks de actividad/aprobación/progreso.
+  ...capsNotifyFeatures(),
   // Avatares XEP-0084: sin el +notify del nodo de metadata el servidor no nos
   // avisa cuando un contacto cambia su foto.
   `${AVATAR_METADATA_NODE}+notify`,
   CHAT_STATES_NS,
 ];
 
-function getActiveCapsFeatures(): string[] {
+export function getActiveCapsFeatures(): string[] {
   const features = [...CAPS_FEATURES];
   if (Omemo.isEnabled()) {
     features.push('eu.siacs.conversations.axolotl+notify');
@@ -58,13 +57,14 @@ function getActiveCapsFeatures(): string[] {
 // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
 // los features nuevos no se anunciarían y no llegarían los avatares.
 // v4: + chatstates (XEP-0085).
+// v6: + hooks OpenClaw (activity/approval/progress) vía capsNotifyFeatures().
 // BUMP A v5 SI OMEMO ESTÁ ENABLED: Es intencional cambiar el hash de 'v4-telemetry-avatar-chatstates'
 // a 'v5-telemetry-avatar-chatstates-omemo' cuando OMEMO está habilitado para forzar al servidor y a
 // otros contactos conectados (incluido el componente OpenClaw) a invalidar su caché de nuestras
 // capacidades (disco#info XEP-0115). Esto asegura que re-consulten nuestras capabilities y detecten
 // correctamente nuestro soporte para eu.siacs.conversations.axolotl+notify de inmediato.
-function capsVer(config: XmppAccountConfig): string {
-  return config.omemoEnabled ? 'v5-telemetry-avatar-chatstates-omemo' : 'v4-telemetry-avatar-chatstates';
+export function capsVer(config: XmppAccountConfig): string {
+  return config.omemoEnabled ? 'v7-telemetry-hooks-avatar-chatstates-omemo' : 'v6-telemetry-hooks-avatar-chatstates';
 }
 
 /** Presencia inicial con caps. Sin ella el servidor no nos enruta mensajes entrantes. */

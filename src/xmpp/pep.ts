@@ -14,11 +14,14 @@ import {
   PUBSUB_NS,
   TELEMETRY_NODE,
 } from '@/xmpp/ns';
+import { agents } from '@/xmpp/agents';
+import { NS_HOOKS_ACTIVITY, NS_HOOKS_APPROVAL, NS_HOOKS_PROGRESS } from '@/xmpp/pep/namespaces';
+import { parseHook } from '@/xmpp/pep/hooks';
+import { parseTelemetry as parseTelemetryFull, type AgentTelemetry } from '@/xmpp/pep/telemetry';
 import { bareJid } from '@/xmpp/parse';
 import { usableClient } from '@/xmpp/session';
 
-/** PEP telemetry cache: bare_jid -> telemetry dict parsed from pubsub events. */
-const agentTelemetry = new Map<string, Record<string, unknown>>();
+const HOOK_NODES = [NS_HOOKS_ACTIVITY, NS_HOOKS_APPROVAL, NS_HOOKS_PROGRESS];
 
 /** bare_jid -> file:// del avatar cacheado (XEP-0084). */
 const avatarUris = new Map<string, string>();
@@ -94,65 +97,45 @@ function notifyTelemetry(jid: string, telemetry: Record<string, unknown>) {
 }
 
 /**
- * Extrae la telemetría del <telemetry/> publicado en el nodo PEP.
- * Espejo de parse_telemetry() en xmpp_client.py del cliente GTK.
- *
- * El payload que emite el gateway anida los números en atributos, no en texto:
- *
- *   <telemetry xmlns='urn:nanoclaw:telemetry:0'>
- *     <context used='42000' max='128000'/>
- *     <tokens total='…' input='…' output='…' requests='…'/>
- *     <cost usd='0.0431'/>
- *     <model>deepseek-v4-pro</model>
- *     <tool>bash</tool>
- *   </telemetry>
- *
- * Nunca inventa ceros: "sin dato" y "cero" son cosas distintas para una barra de
- * progreso, así que una clave ausente se queda ausente.
+ * Telemetría en el formato plano que consume la pantalla de chat
+ * (context_used, tokens_total, cost…), derivada del parser completo de
+ * src/xmpp/pep/telemetry.ts. Nunca inventa ceros: una clave ausente se queda
+ * ausente, y el contexto sólo sirve por pares (used + max no nulo).
  */
+function toFlat(t: AgentTelemetry): Record<string, unknown> {
+  const flat: Record<string, unknown> = {};
+  if (t.context.used !== undefined && t.context.max) {
+    flat.context_used = t.context.used;
+    flat.context_max = t.context.max;
+  }
+  for (const key of ['total', 'input', 'output', 'requests'] as const) {
+    if (t.tokens[key] !== undefined) flat[`tokens_${key}`] = t.tokens[key];
+  }
+  if (t.cost.usd !== undefined) flat.cost = t.cost.usd;
+  if (t.model) flat.model = t.model;
+  if (t.tool) flat.tool = t.tool;
+  return flat;
+}
+
+/** Fachada compatible: <item>/<telemetry/> -> dict plano ({} si no hay datos). */
 export function parseTelemetry(item: Element): Record<string, unknown> {
-  const telemetry: Record<string, unknown> = {};
-  const tlm = item.getChild('telemetry', TELEMETRY_NODE) ?? item.getChild('telemetry', LEGACY_TELEMETRY_NODE);
-  if (!tlm) return telemetry;
+  const t = parseTelemetryFull(item);
+  return t ? toFlat(t) : {};
+}
 
-  const intAttr = (node: Element | undefined, attr: string): number | undefined => {
-    const val = node?.attrs[attr] as string | undefined;
-    if (val === undefined || val === '') return undefined;
-    const n = Number(val);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  // El contexto sólo sirve por pares: un `used` sin `max` (o con max=0) no da
-  // fracción que pintar, así que se descarta entero en vez de publicar la mitad.
-  const context = tlm.getChild('context');
-  const used = intAttr(context, 'used');
-  const max = intAttr(context, 'max');
-  if (used !== undefined && max) {
-    telemetry.context_used = used;
-    telemetry.context_max = max;
-  }
-
-  const tokens = tlm.getChild('tokens');
-  if (tokens) {
-    for (const key of ['total', 'input', 'output', 'requests'] as const) {
-      const value = intAttr(tokens, key);
-      if (value !== undefined) telemetry[`tokens_${key}`] = value;
-    }
-  }
-
-  const cost = Number(tlm.getChild('cost')?.attrs.usd);
-  if (Number.isFinite(cost)) telemetry.cost = cost;
-
-  for (const tag of ['model', 'tool'] as const) {
-    const text = tlm.getChildText(tag);
-    if (text) telemetry[tag] = text;
-  }
-
-  return telemetry;
+/** Aplica la telemetría al store de agentes y avisa a los listeners clásicos. */
+function applyAgentTelemetry(bare: string, t: AgentTelemetry): boolean {
+  const flat = toFlat(t);
+  const hasData = Object.keys(flat).length > 0;
+  if (!hasData && !t.activity && !t.availability) return false;
+  agents.applyTelemetry(bare, t);
+  if (hasData) notifyTelemetry(bare, flat);
+  return true;
 }
 
 export function getAgentTelemetry(bare: string): Record<string, unknown> | undefined {
-  return agentTelemetry.get(bare);
+  const t = agents.get(bare)?.telemetry;
+  return t ? toFlat(t) : undefined;
 }
 
 /** file:// del avatar cacheado del contacto (XEP-0084), si publicó uno. */
@@ -224,12 +207,8 @@ export async function fetchAgentTelemetry(bareJid: string): Promise<void> {
         ?.getChild('items')
         ?.getChildren('item') ?? [];
       for (const item of items) {
-        const telemetry = parseTelemetry(item);
-        if (Object.keys(telemetry).length > 0) {
-          agentTelemetry.set(bareJid, telemetry);
-          notifyTelemetry(bareJid, telemetry);
-          return;
-        }
+        const telemetry = parseTelemetryFull(item);
+        if (telemetry && applyAgentTelemetry(bareJid, telemetry)) return;
       }
     } catch {
       // Lo normal si el contacto no es un agente, o si no tiene este nodo
@@ -254,11 +233,17 @@ export function handlePubsubEvent(stanza: Element): boolean {
     if (!from) return true;
     const bare = bareJid(from);
     for (const item of items?.getChildren('item') ?? []) {
-      const telemetry = parseTelemetry(item);
-      if (Object.keys(telemetry).length > 0) {
-        agentTelemetry.set(bare, telemetry);
-        notifyTelemetry(bare, telemetry);
-      }
+      const telemetry = parseTelemetryFull(item);
+      if (telemetry) applyAgentTelemetry(bare, telemetry);
+    }
+    return true;
+  }
+  if (HOOK_NODES.includes(node ?? '')) {
+    const from = stanza.attrs.from as string | undefined;
+    if (!from) return true;
+    for (const item of items?.getChildren('item') ?? []) {
+      const hook = parseHook(item, node as string);
+      if (hook) agents.applyHook(bareJid(from), hook);
     }
     return true;
   }
