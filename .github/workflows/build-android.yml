@@ -1,8 +1,7 @@
+# DESHABILITADO: reemplazado por release.yml (ver openspec/changes/modernize-single-client). No usar.
 name: Build Android APK
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       build_type:
