@@ -11,10 +11,17 @@ import {
   bodyWithOob,
   extractReply,
   extractOobUrl,
+  extractStanzaId,
   parseActionMetadata,
   parseReplaceId,
+  replyBody,
 } from '@/xmpp/parse';
 import { restorePendingQuickResponses } from '@/xmpp/actions';
+import { applyReactions, applyRetraction, patchList } from '@/xmpp/annotations';
+import { historyExtra } from '@/xmpp/messages';
+import { rooms } from '@/xmpp/store';
+import { foldReactions, parseReactions } from '@/xmpp/xep/reactions';
+import { parseRetract } from '@/xmpp/xep/retract';
 import { session, usableClient } from '@/xmpp/session';
 import type { StanzaCtx } from '@/xmpp/session';
 
@@ -29,8 +36,11 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
   const message = forwarded.getChild('message');
   if (!message) return null;
 
-  const body = bodyWithOob(message, message.getChildText('body') || '');
-  if (!body) return null;
+  const body = bodyWithOob(message, replyBody(message) ?? message.getChildText('body') ?? '');
+  const reactions = parseReactions(message);
+  const retractId = parseRetract(message);
+  // Reacciones y retractaciones archivadas son eventos, no burbujas.
+  if (!body && !reactions) return null;
 
   const fromAttr = (message.attrs.from as string) || '';
   const toAttr = (message.attrs.to as string) || '';
@@ -58,9 +68,18 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
   const mamId = (mamResult.attrs.id as string) || '';
 
   const actions = parseActionMetadata(message);
+  const senderNick = type === 'groupchat' ? fromAttr.split('/')[1] : undefined;
+  // En una sala el id de archivo ES el stanza-id; <stanza-id> lo confirma si viene.
+  const stanzaId = type === 'groupchat' ? extractStanzaId(message, fromBare) ?? (mamId || null) : null;
 
   return {
     id: (message.attrs.id as string) || mamId || `mam-${timestamp}`,
+    stanzaId,
+    senderNick,
+    retractId,
+    reactionEvent: reactions
+      ? { targetId: reactions.targetId, emojis: reactions.emojis, sender: type === 'groupchat' ? fromAttr : fromBare }
+      : null,
     mamId: mamId || null,
     from: fromBare,
     to: toBare,
@@ -202,6 +221,19 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
     // their final corrections update memory but miss SQLite entirely.
     const stanzaId = msg.id;
 
+    if (msg.reactionEvent) {
+      const { targetId, emojis, sender } = msg.reactionEvent;
+      applyReactions(contactJid, targetId, sender, emojis);
+      patchList(fresh, targetId, (m) => ({ ...m, reactions: foldReactions(m.reactions, sender, emojis) }));
+      continue;
+    }
+    if (msg.retractId) {
+      const author = msg.type === 'groupchat' ? { nick: msg.senderNick } : { direction: msg.direction };
+      applyRetraction(contactJid, msg.retractId, author);
+      patchList(fresh, msg.retractId, (m) =>
+        (author.nick ? m.senderNick === author.nick : m.direction === author.direction) ? { ...m, retracted: true } : null);
+      continue;
+    }
     if (msg.replaceId) {
       const applied = await XmppHistory.applyCorrectionByStanzaId(
         contactJid,
@@ -239,6 +271,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
     )) {
       continue;
     }
+    const extra = historyExtra(msg);
     const inserted = await XmppHistory.recordMessage(
       contactJid,
       msg.body,
@@ -254,6 +287,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
       null,
       null,
       msg.encryptionStatus === 'encrypted',
+      ...(extra ? [extra] as [typeof extra] : []),
     );
     if (inserted) fresh.push(msg);
   }
@@ -264,18 +298,24 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
 /** Rehydrate a cached row into the shape the UI renders. */
 export function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
   const ownJid = session.account?.jid ?? '';
+  const group = rooms.get(contactJid) !== undefined;
   return {
     id: row.stanza_id || row.mam_id || `cache-${row.direction}-${row.timestamp}`,
     mamId: row.mam_id,
     from: row.direction === 'out' ? ownJid : contactJid,
     to: row.direction === 'out' ? contactJid : ownJid,
-    type: 'chat',
+    type: group ? 'groupchat' : 'chat',
     body: row.body,
     timestamp: row.timestamp,
     direction: row.direction,
     wasEncrypted: row.was_encrypted === 1,
     encryptionStatus: row.was_encrypted === 1 ? 'encrypted' : undefined,
-    isGroup: false,
+    isGroup: group,
+    stanzaId: row.muc_stanza_id ?? (group ? row.mam_id : null),
+    senderNick: row.sender_nick ?? undefined,
+    reactions: row.reactions ?? undefined,
+    replyTo: row.reply_to,
+    retracted: row.retracted === 1 ? true : undefined,
     quickResponses: row.quick_responses,
     commands: row.commands,
     oobUrl: row.oob_url,
@@ -351,7 +391,8 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
     }
   }
 
-  const parsed = parseMamResult(mamResult, config.jid, botNick);
+  const roomJid = bareJid((message?.attrs.from as string) || '');
+  const parsed = parseMamResult(mamResult, config.jid, rooms.get(roomJid)?.nick || botNick);
   if (parsed) {
     parsed.encryptionStatus = mamEncryptionStatus;
     parsed.wasEncrypted = mamEncryptionStatus === 'encrypted';

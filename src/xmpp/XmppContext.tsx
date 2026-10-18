@@ -3,10 +3,10 @@ import React from 'react';
 import { AppState } from 'react-native';
 import { XmppService } from '@/xmpp/XmppService';
 import { connection } from '@/xmpp/session';
-import { contacts as contactsStore, messages as messagesStore, pendingActions as pendingStore } from '@/xmpp/store';
+import { contacts as contactsStore, invites as invitesStore, messages as messagesStore, pendingActions as pendingStore, rooms as roomsStore } from '@/xmpp/store';
 import { PushStatus, type XmppPushStatus } from '@/xmpp/pushStatus';
 import { useXmppAccount } from '@/hooks/useXmppAccount';
-import type { XmppContact, XmppConnectionState, XmppMessage, XmppPendingAction } from '@/types/xmpp';
+import type { XmppContact, XmppConnectionState, XmppMessage, XmppPendingAction, XmppRoom, XmppRoomInvite } from '@/types/xmpp';
 
 interface XmppContextValue {
   state: XmppConnectionState;
@@ -155,4 +155,19 @@ export function useConversation(jid: string): readonly XmppMessage[] {
     useCallback((cb: () => void) => messagesStore.subscribe(jid, cb), [jid]),
     () => messagesStore.getConversation(jid),
   );
+}
+
+/** Una sala (undefined si no la conocemos). Snapshot estable: cambia sólo si esa sala cambia. */
+export function useRoom(jid: string): XmppRoom | undefined {
+  return useSyncExternalStore(roomsStore.subscribe, () => roomsStore.get(jid));
+}
+
+/** Todas las salas conocidas (marcadores + unidas). */
+export function useRooms(): readonly XmppRoom[] {
+  return useSyncExternalStore(roomsStore.subscribe, roomsStore.getAll);
+}
+
+/** Invitaciones a salas pendientes de aceptar o rechazar. */
+export function useRoomInvites(): readonly XmppRoomInvite[] {
+  return useSyncExternalStore(invitesStore.subscribe, invitesStore.getAll);
 }

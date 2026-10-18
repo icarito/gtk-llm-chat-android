@@ -7,7 +7,10 @@ import { XmppHistory } from '@/xmpp/XmppHistory';
 import { expireMatchingQuickResponses, resolveApprovalActionsFromOwnMessage } from '@/xmpp/actions';
 import { CHAT_STATES_NS } from '@/xmpp/ns';
 import { session, usableClient } from '@/xmpp/session';
-import { contacts, messages } from '@/xmpp/store';
+import { contacts, messages, rooms } from '@/xmpp/store';
+import { resolveTargetId } from '@/xmpp/annotations';
+import { buildReply, NS_REPLY } from '@/xmpp/xep/reply';
+import type { HistoryExtra } from '@/xmpp/XmppHistory';
 
 /** Reemplaza (inmutable) el mensaje `id` saliente de la conversación `to`. */
 function patchOutbound(to: string, id: string, patch: Partial<XmppMessage>) {
@@ -49,6 +52,25 @@ export function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
     const contact = contacts.get(msg.from);
     notifyXmppMessage(msg, contact?.name);
   }
+}
+
+/** Metadatos XEP-0444/0461/0424/0359 de un mensaje, para persistirlos; undefined si no tiene ninguno. */
+export function historyExtra(msg: XmppMessage): HistoryExtra | undefined {
+  const extra: HistoryExtra = {
+    reactions: msg.reactions,
+    replyTo: msg.replyTo,
+    retracted: msg.retracted,
+    mucStanzaId: msg.stanzaId,
+    senderNick: msg.senderNick,
+  };
+  return Object.values(extra).some(Boolean) ? extra : undefined;
+}
+
+/** Respuesta (XEP-0461) a otro mensaje: `id` es el del mensaje citado, `jid` su autor. */
+export interface ReplyRef {
+  id: string;
+  jid: string;
+  quotedText?: string;
 }
 
 /** Reintenta un mensaje saliente marcado como fallido. */
@@ -99,7 +121,12 @@ export async function retryMessage(to: string, id: string): Promise<void> {
   }
 }
 
-export async function sendMessage(to: string, body: string, type: 'chat' | 'groupchat' = 'chat'): Promise<string> {
+export async function sendMessage(
+  to: string,
+  body: string,
+  type: 'chat' | 'groupchat' = 'chat',
+  opts: { replyTo?: ReplyRef } = {},
+): Promise<string> {
   const client = usableClient();
   if (!client) {
     throw new Error('XMPP not connected');
@@ -108,6 +135,14 @@ export async function sendMessage(to: string, body: string, type: 'chat' | 'grou
   const timestamp = new Date().toISOString();
 
   if (!body.trim()) throw new Error('No se puede enviar un mensaje vacío');
+
+  const reply = opts.replyTo
+    ? { ...opts.replyTo, id: type === 'groupchat' ? resolveTargetId(to, opts.replyTo.id) : opts.replyTo.id }
+    : undefined;
+  const replyTo = reply
+    ? { text: reply.quotedText ?? '', sender: reply.jid, id: reply.id, jid: reply.jid }
+    : undefined;
+  const senderNick = type === 'groupchat' ? rooms.get(to)?.nick : undefined;
 
   addMessageToMap({
     id,
@@ -119,7 +154,10 @@ export async function sendMessage(to: string, body: string, type: 'chat' | 'grou
     direction: 'out',
     isGroup: type === 'groupchat',
     sendState: 'pending',
+    replyTo,
+    senderNick,
   });
+  const extra = historyExtra({ replyTo, senderNick } as XmppMessage);
 
   try {
     if (session.account?.omemoEnabled && Omemo.isEnabled()) {
@@ -138,32 +176,41 @@ export async function sendMessage(to: string, body: string, type: 'chat' | 'grou
           xml('store', { xmlns: 'urn:xmpp:hints' }),
           // XEP-0085: un mensaje con cuerpo implica estado active.
           xml('active', { xmlns: CHAT_STATES_NS }),
+          // Cifrado: no hay fallback de cita en claro, pero el <reply> sí viaja.
+          ...(reply ? [xml('reply', { xmlns: NS_REPLY, id: reply.id, to: reply.jid })] : []),
         ));
         updateOutboundEncryptionStatus(to, id, 'encrypted');
         updateOutboundSendState(to, id, 'sent');
         XmppHistory.recordMessage(
           to, body, 'out', timestamp, null,
-          null, null, null, null, null, null, null, null, true,
+          null, null, id, null, null, null, null, null, true, extra,
         ).catch(() => {});
         return id;
       }
       throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
     }
 
-    await client.send(xml(
+    const base = reply
+      ? buildReply(to, type, body, { targetId: reply.id, targetJid: reply.jid, quotedText: reply.quotedText })
+      : xml('message', { type, to }, xml('body', {}, body));
+    const stanza = xml(
       'message',
-      { type, to, id },
-      xml('body', {}, body),
+      { ...base.attrs, id },
+      ...base.children,
       // XEP-0085: un mensaje con cuerpo implica estado active.
       xml('active', { xmlns: CHAT_STATES_NS }),
-    ));
+    );
+    await client.send(stanza);
     updateOutboundSendState(to, id, 'sent');
   } catch (error) {
     updateOutboundSendState(to, id, 'failed');
     throw error;
   }
   // Cached with no mam_id; the archive copy will be matched onto this row.
-  XmppHistory.recordMessage(to, body, 'out', timestamp, null).catch(() => {});
+  XmppHistory.recordMessage(
+    to, body, 'out', timestamp, null,
+    null, null, id, null, null, null, null, null, false, extra,
+  ).catch(() => {});
   return id;
 }
 

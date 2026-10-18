@@ -46,6 +46,27 @@ import {
   syncHistory,
 } from '@/xmpp/mam';
 import { retryMessage, sendChatState, sendMessage, sendTyping } from '@/xmpp/messages';
+import { react, retractMessage } from '@/xmpp/annotations';
+import {
+  acceptInvite,
+  declineInvite,
+  joinRoom,
+  leaveRoom,
+  removeBookmark,
+  resetRoomCaches,
+  setBookmark,
+  startRooms,
+} from '@/xmpp/rooms';
+import {
+  ban,
+  getRoomConfig,
+  invite,
+  kick,
+  setAffiliation,
+  setRole,
+  setSubject,
+  submitRoomConfig,
+} from '@/xmpp/moderation';
 import { initOmemoOnOnline } from '@/xmpp/omemo';
 import {
   avatarListeners,
@@ -61,7 +82,7 @@ import { enableExpoPushIfAvailable, reportPushFailure } from '@/xmpp/push';
 import { fetchRosterThenAnnounce, resetRoster } from '@/xmpp/roster';
 import { routeStanza } from '@/xmpp/router';
 import { attemptHook, connection, session, type StanzaCtx } from '@/xmpp/session';
-import { contacts, messages, pendingActions } from '@/xmpp/store';
+import { contacts, invites, messages, pendingActions, rooms } from '@/xmpp/store';
 import { isTyping, typingListeners } from '@/xmpp/typing';
 import { resetUploadHost, sendFile } from '@/xmpp/upload';
 
@@ -356,7 +377,10 @@ export const XmppService = {
         connection.scheduleReconnect();
       });
 
-      fetchRosterThenAnnounce(ctx);
+      // Sesión nueva (SM no reanudó: 'online' no se emite al reanudar): el
+      // servidor ya no tiene nuestra presencia en las salas; marcadores y rejoin
+      // van tras roster + presencia inicial.
+      fetchRosterThenAnnounce(ctx).then(() => startRooms(ctx)).catch(() => {});
     });
 
     client.on('offline', () => {
@@ -458,12 +482,40 @@ export const XmppService = {
     // de subida en la próxima sesión.
     resetUploadHost();
     clearPendingActions();
+    // Otra cuenta no hereda salas ni invitaciones de ésta.
+    rooms.reset();
+    invites.reset();
+    resetRoomCaches();
     session.account = null;
   },
 
   sendMessage,
   sendFile,
   sendTyping,
+
+  // ── Reacciones (XEP-0444) y retractación (XEP-0424) ──
+  react,
+  retractMessage,
+
+  // ── Salas (MUC) ──
+  /** Estado observable de salas: `get(jid)`, `getAll()`, `subscribe(cb)`. */
+  rooms: { get: rooms.get, getAll: rooms.getAll, subscribe: rooms.subscribe },
+  /** Invitaciones pendientes: `getAll()`, `subscribe(cb)`. */
+  invites: { get: invites.get, getAll: invites.getAll, subscribe: invites.subscribe },
+  joinRoom,
+  leaveRoom,
+  setBookmark,
+  removeBookmark,
+  acceptInvite,
+  declineInvite,
+  setRole,
+  setAffiliation,
+  kick,
+  ban,
+  setSubject,
+  invite,
+  getRoomConfig,
+  submitRoomConfig,
 
   async answerPendingAction(actionId: string): Promise<void> {
     const action = getPendingAction(actionId);

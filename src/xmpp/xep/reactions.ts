@@ -48,3 +48,22 @@ export function parseReactions(msg: Element): ParsedReactions | null {
     emojis: reactions.getChildren('reaction').map((reaction) => reaction.text()),
   };
 }
+
+/**
+ * Aplica el conjunto COMPLETO de reacciones de `sender` sobre las agregadas
+ * (emoji -> remitentes): quita lo que ese remitente tenía y añade `emojis`.
+ * Idempotente; un conjunto vacío retira todas sus reacciones.
+ */
+export function foldReactions(
+  current: Record<string, string[]> | undefined,
+  sender: string,
+  emojis: string[],
+): Record<string, string[]> {
+  const next: Record<string, string[]> = {};
+  for (const [emoji, senders] of Object.entries(current ?? {})) {
+    const rest = senders.filter((s) => s !== sender);
+    if (rest.length > 0) next[emoji] = rest;
+  }
+  for (const emoji of new Set(emojis)) next[emoji] = [...(next[emoji] ?? []), sender];
+  return next;
+}

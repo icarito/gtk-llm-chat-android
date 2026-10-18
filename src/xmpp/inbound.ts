@@ -10,8 +10,10 @@ import {
   extractDelayStamp,
   extractOobUrl,
   extractReply,
+  extractStanzaId,
   parseActionMetadata,
   parseReplaceId,
+  replyBody,
 } from '@/xmpp/parse';
 import {
   addPendingActions,
@@ -20,7 +22,9 @@ import {
   resolvePendingCommandActionsForConversation,
 } from '@/xmpp/actions';
 import { applyIncomingCorrection } from '@/xmpp/corrections';
-import { addMessageToMap } from '@/xmpp/messages';
+import { handleAnnotation, matchesTarget } from '@/xmpp/annotations';
+import { addMessageToMap, historyExtra } from '@/xmpp/messages';
+import { messages, rooms } from '@/xmpp/store';
 import { isGroupJidEx, isOwnGroupchatEcho, messageMentionsBot } from '@/xmpp/muc';
 import { setTyping } from '@/xmpp/typing';
 import type { StanzaCtx } from '@/xmpp/session';
@@ -66,8 +70,11 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
       const partnerJid = direction === 'out' ? toBare : fromBare;
       const senderJid = direction === 'out' ? config.jid : fromAttr;
 
+      // XEP-0444/0424 hechas desde otro dispositivo nuestro (o recibidas en otro recurso).
+      if (handleAnnotation(message, partnerJid, direction === 'out' ? config.jid : fromAttr, direction === 'out')) return;
+
       const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(message, senderJid);
-      const rawBodyText = wasEncrypted ? (decryptedBody || '') : (message.getChildText('body') || '');
+      const rawBodyText = wasEncrypted ? (decryptedBody || '') : (replyBody(message) ?? message.getChildText('body') ?? '');
       const carbonBody = bodyWithOob(message, rawBodyText);
 
       if (carbonBody) {
@@ -136,7 +143,7 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
           carbonMsg.quickResponses ?? null, carbonMsg.commands ?? null,
           msgId, carbonMsg.oobUrl ?? null,
           null, null, null, null,
-          carbonMsg.encryptionStatus === 'encrypted').catch(() => {});
+          carbonMsg.encryptionStatus === 'encrypted', historyExtra(carbonMsg)).catch(() => {});
       }
     }
     return;
@@ -151,8 +158,13 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
   const from = stanza.attrs.from as string | undefined;
   if (!from) return;
 
+  const platformId = bareJid(from);
+  // XEP-0444 / XEP-0424: no son burbujas, se agregan sobre el mensaje objetivo.
+  if (handleAnnotation(stanza, platformId, from, false)) return;
+
   const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(stanza, from);
-  const rawBodyText = wasEncrypted ? (decryptedBody || '') : (stanza.getChildText('body') || '');
+  // XEP-0461: el fallback de la cita no es parte del texto del mensaje.
+  const rawBodyText = wasEncrypted ? (decryptedBody || '') : (replyBody(stanza) ?? stanza.getChildText('body') ?? '');
   const body = bodyWithOob(stanza, rawBodyText);
 
   // XEP-0085: los estados viajan en mensajes sin cuerpo (o junto a uno).
@@ -163,13 +175,26 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
   if (composing || stoppedTyping || body) {
     setTyping(bareJid(from), composing && !body);
   }
-  if (!body) return;
+  const ownNick = rooms.get(platformId)?.nick || botNick;
+  const stanzaId = type === 'groupchat' ? extractStanzaId(stanza, platformId) : null;
 
-  const platformId = bareJid(from);
-
-  if (type === 'groupchat') {
-    if (isOwnGroupchatEcho(from, botNick)) return;
+  if (type === 'groupchat' && isOwnGroupchatEcho(from, ownNick)) {
+    // El eco trae el stanza-id de la sala: es el id con el que los demás
+    // reaccionarán a / retractarán nuestro mensaje.
+    const id = stanza.attrs.id as string | undefined;
+    if (id && stanzaId) {
+      const list = messages.getConversation(platformId);
+      const idx = list.findIndex((m) => m.direction === 'out' && matchesTarget(m, id));
+      if (idx >= 0 && list[idx]!.stanzaId !== stanzaId) {
+        const updated = [...list];
+        updated[idx] = { ...updated[idx]!, stanzaId };
+        messages.setConversation(platformId, updated);
+        XmppHistory.setMucStanzaId(platformId, id, stanzaId).catch(() => {});
+      }
+    }
+    return;
   }
+  if (!body) return;
 
   // XEP-0308: el servidor resuelve una pregunta pendiente con una
   // corrección al <id> original (ver resolveQuestion() en xmpp.ts del
@@ -195,7 +220,7 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
   }
 
   const isGroup = type === 'groupchat' || isGroupJidEx(platformId, undefined);
-  const isMention = !isGroup || messageMentionsBot(stanza, body, botNick, config.jid);
+  const isMention = !isGroup || messageMentionsBot(stanza, body, ownNick, config.jid);
 
   const actions = parseActionMetadata(stanza);
   const quickResponses = decryptedMetadata?.quickResponses || actions.quickResponses;
@@ -219,6 +244,8 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
     oobUrl,
     wasEncrypted,
     encryptionStatus,
+    stanzaId,
+    senderNick: type === 'groupchat' ? from.split('/')[1] : undefined,
   };
 
   if (seenIds.has(msg.id)) return;
@@ -253,5 +280,6 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
     null,
     null,
     msg.encryptionStatus === 'encrypted',
+    historyExtra(msg),
   ).catch(() => {});
 }

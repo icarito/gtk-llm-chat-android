@@ -32,3 +32,4 @@ export const PUBSUB_NS = 'http://jabber.org/protocol/pubsub';
 export const DISCO_INFO_NS = 'http://jabber.org/protocol/disco#info';
 
 export const CAPS_NODE = 'https://github.com/icarito/gtk-llm-chat-android';
+export const CAPS_NS = 'http://jabber.org/protocol/caps';

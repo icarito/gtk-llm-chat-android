@@ -92,7 +92,7 @@ describe('bookmarks (XEP-0402)', () => {
     ]);
   });
 
-  it('ignora items sin conference o sin jid', () => {
+  it('ignora items sin conference y toma la sala del id del item si falta jid (XEP-0402)', () => {
     const items = xml(
       'items',
       { xmlns: NS_BOOKMARKS },
@@ -100,6 +100,6 @@ describe('bookmarks (XEP-0402)', () => {
       xml('item', { id: 'sin-jid' }, xml('conference', { xmlns: NS_BOOKMARKS })),
     );
 
-    expect(parseBookmarksItems(items)).toEqual([]);
+    expect(parseBookmarksItems(items)).toEqual([{ jid: 'sin-jid', autojoin: false }]);
   });
 });

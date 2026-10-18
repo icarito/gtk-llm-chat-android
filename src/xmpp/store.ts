@@ -7,7 +7,7 @@
  * escuchan A. Los arrays de cada conversación son inmutables — quien los
  * modifica los reemplaza (`setConversation`), nunca los muta.
  */
-import type { XmppContact, XmppMessage, XmppPendingAction } from '@/types/xmpp';
+import type { XmppContact, XmppMessage, XmppPendingAction, XmppRoom, XmppRoomInvite } from '@/types/xmpp';
 
 const EMPTY: readonly XmppMessage[] = Object.freeze([]);
 
@@ -132,5 +132,73 @@ export const pendingActions = {
   /** Refresca el snapshot sin notificar (lecturas síncronas tras una poda). */
   refresh() {
     this.snapshot = [...this.map.values()];
+  },
+};
+
+// ── Salas (MUC) e invitaciones ──
+
+const roomsMap = new Map<string, XmppRoom>();
+const roomListeners = new Listeners();
+let roomsSnapshot: readonly XmppRoom[] = Object.freeze([]);
+
+/** Cada sala es inmutable: `patch` la reemplaza, así `get(jid)` es un snapshot estable por sala. */
+export const rooms = {
+  get(jid: string): XmppRoom | undefined {
+    return roomsMap.get(jid);
+  },
+  getAll(): readonly XmppRoom[] {
+    return roomsSnapshot;
+  },
+  /** Crea la sala si no existe (con `base`) y aplica `patch`. */
+  patch(jid: string, patch: Partial<XmppRoom>, base?: Partial<XmppRoom>) {
+    const prev = roomsMap.get(jid) ?? {
+      jid, nick: '', state: 'left', bookmarked: false, occupants: {}, role: '', affiliation: '', ...base,
+    } as XmppRoom;
+    roomsMap.set(jid, { ...prev, ...patch });
+    roomsSnapshot = Object.freeze([...roomsMap.values()]);
+    roomListeners.emit();
+  },
+  remove(jid: string) {
+    if (!roomsMap.delete(jid)) return;
+    roomsSnapshot = Object.freeze([...roomsMap.values()]);
+    roomListeners.emit();
+  },
+  subscribe(cb: () => void): () => void {
+    return roomListeners.add(cb);
+  },
+  /** Nueva cuenta: vacía sin notificar. */
+  reset() {
+    roomsMap.clear();
+    roomsSnapshot = Object.freeze([]);
+  },
+};
+
+const invitesMap = new Map<string, XmppRoomInvite>();
+const inviteListeners = new Listeners();
+let invitesSnapshot: readonly XmppRoomInvite[] = Object.freeze([]);
+
+export const invites = {
+  getAll(): readonly XmppRoomInvite[] {
+    return invitesSnapshot;
+  },
+  get(id: string): XmppRoomInvite | undefined {
+    return invitesMap.get(id);
+  },
+  add(invite: XmppRoomInvite) {
+    invitesMap.set(invite.id, invite);
+    invitesSnapshot = Object.freeze([...invitesMap.values()]);
+    inviteListeners.emit();
+  },
+  remove(id: string) {
+    if (!invitesMap.delete(id)) return;
+    invitesSnapshot = Object.freeze([...invitesMap.values()]);
+    inviteListeners.emit();
+  },
+  subscribe(cb: () => void): () => void {
+    return inviteListeners.add(cb);
+  },
+  reset() {
+    invitesMap.clear();
+    invitesSnapshot = Object.freeze([]);
   },
 };

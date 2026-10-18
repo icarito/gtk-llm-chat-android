@@ -11,6 +11,7 @@ import {
   LEGACY_TELEMETRY_NODE,
   TELEMETRY_NODE,
 } from '@/xmpp/ns';
+import { NS_BOOKMARKS } from '@/xmpp/xep/bookmarks';
 import type { StanzaCtx } from '@/xmpp/session';
 
 /**
@@ -29,6 +30,8 @@ const CAPS_FEATURES = [
   // avisa cuando un contacto cambia su foto.
   `${AVATAR_METADATA_NODE}+notify`,
   CHAT_STATES_NS,
+  // XEP-0402: avisos de marcadores de salas (autojoin en vivo desde otro cliente).
+  `${NS_BOOKMARKS}+notify`,
 ];
 
 function getActiveCapsFeatures(): string[] {
@@ -57,14 +60,16 @@ function getActiveCapsFeatures(): string[] {
 // SUBIDA A MANO al añadir el +notify de avatares: el servidor cachea por
 // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
 // los features nuevos no se anunciarían y no llegarían los avatares.
-// v4: + chatstates (XEP-0085).
-// BUMP A v5 SI OMEMO ESTÁ ENABLED: Es intencional cambiar el hash de 'v4-telemetry-avatar-chatstates'
-// a 'v5-telemetry-avatar-chatstates-omemo' cuando OMEMO está habilitado para forzar al servidor y a
+// v4: + chatstates (XEP-0085). v6: + bookmarks+notify (XEP-0402).
+// BUMP A v5 SI OMEMO ESTÁ ENABLED: Es intencional cambiar el hash de 'v6-telemetry-avatar-chatstates-bookmarks'
+// a 'v7-telemetry-avatar-chatstates-bookmarks-omemo' cuando OMEMO está habilitado para forzar al servidor y a
 // otros contactos conectados (incluido el componente OpenClaw) a invalidar su caché de nuestras
 // capacidades (disco#info XEP-0115). Esto asegura que re-consulten nuestras capabilities y detecten
 // correctamente nuestro soporte para eu.siacs.conversations.axolotl+notify de inmediato.
 function capsVer(config: XmppAccountConfig): string {
-  return config.omemoEnabled ? 'v5-telemetry-avatar-chatstates-omemo' : 'v4-telemetry-avatar-chatstates';
+  return config.omemoEnabled
+    ? 'v7-telemetry-avatar-chatstates-bookmarks-omemo'
+    : 'v6-telemetry-avatar-chatstates-bookmarks';
 }
 
 /** Presencia inicial con caps. Sin ella el servidor no nos enruta mensajes entrantes. */

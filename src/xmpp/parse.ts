@@ -1,6 +1,7 @@
 /** Helpers puros de parseo de stanzas, compartidos por los módulos de src/xmpp. */
 import type { Element } from '@xmpp/xml';
-import type { XmppButtonStyle, XmppInlineCommand, XmppQuickResponse } from '@/types/xmpp';
+import type { XmppButtonStyle, XmppInlineCommand, XmppMessage, XmppQuickResponse } from '@/types/xmpp';
+import { parseReply } from '@/xmpp/xep/reply';
 import {
   COMMAND_NS,
   DISCO_ITEMS_NS,
@@ -19,13 +20,38 @@ export function parseCaps(stanza: Element): string | null {
   return (c.attrs.node as string) || null;
 }
 
-export function extractReply(stanza: Element): { text: string; sender: string } | null {
-  const reply = stanza.getChild('reply', 'urn:xmpp:reply:0');
-  if (!reply) return null;
-  const fallback = stanza.getChild('fallback', 'urn:xmpp:fallback:0');
-  const fallbackText = fallback ? fallback.getChildText('body') || '' : '';
-  const to = (reply.attrs.to as string) || '';
-  return { text: fallbackText, sender: to ? bareJid(to) : 'unknown' };
+/**
+ * XEP-0461 en una stanza entrante. `text` es la cita que el emisor puso en el
+ * fallback XEP-0428 (sin los `> `); `id` es el mensaje citado.
+ */
+export function extractReply(stanza: Element): NonNullable<XmppMessage['replyTo']> | null {
+  const parsed = parseReply(stanza);
+  if (!parsed) return null;
+  const raw = stanza.getChildText('body') ?? '';
+  const stripped = parsed.bodyWithoutFallback;
+  let text = '';
+  if (stripped !== raw && raw.endsWith(stripped)) {
+    text = raw.slice(0, raw.length - stripped.length).replace(/\n$/, '')
+      .split('\n').map((line) => line.replace(/^> ?/, '')).join('\n');
+  }
+  return {
+    text,
+    sender: parsed.targetJid ? bareJid(parsed.targetJid) : 'unknown',
+    id: parsed.targetId,
+    ...(parsed.targetJid ? { jid: parsed.targetJid } : {}),
+  };
+}
+
+/** Cuerpo sin el fallback de la respuesta (null si la stanza no es una respuesta). */
+export function replyBody(stanza: Element): string | null {
+  return parseReply(stanza)?.bodyWithoutFallback ?? null;
+}
+
+/** XEP-0359: el stanza-id que asignó `by` (la sala, en groupchat). */
+export function extractStanzaId(stanza: Element, by: string): string | null {
+  const found = stanza.getChildren('stanza-id', 'urn:xmpp:sid:0')
+    .find((el) => el.attrs.by === by);
+  return (found?.attrs.id as string | undefined) || null;
 }
 
 /**
