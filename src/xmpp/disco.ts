@@ -3,6 +3,8 @@ import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import type { XmppAccountConfig } from '@/types/xmpp';
 import { Omemo } from '@/xmpp/xep-0384';
+import { NODE_DEVICES } from '@/xmpp/omemo2';
+import { session } from '@/xmpp/session';
 import {
   AVATAR_METADATA_NODE,
   CAPS_NODE,
@@ -38,6 +40,8 @@ export function getActiveCapsFeatures(): string[] {
   if (Omemo.isEnabled()) {
     features.push('eu.siacs.conversations.axolotl+notify');
   }
+  // OMEMO 2: sin el +notify no recibimos los cambios de device list de los contactos.
+  if (session.account?.omemoEnabled) features.push(`${NODE_DEVICES}+notify`);
   return features;
 }
 
@@ -62,9 +66,10 @@ export function getActiveCapsFeatures(): string[] {
 // v4: + chatstates (XEP-0085). v8: + hooks OpenClaw (capsNotifyFeatures) + bookmarks+notify (XEP-0402).
 // Con OMEMO se usa otro ver para forzar a servidor/contactos (incl. OpenClaw) a re-consultar disco#info
 // (XEP-0115) y detectar eu.siacs.conversations.axolotl+notify de inmediato.
+// v10: + urn:xmpp:omemo:2:devices+notify.
 export function capsVer(config: XmppAccountConfig): string {
   return config.omemoEnabled
-    ? 'v9-telemetry-hooks-avatar-chatstates-bookmarks-omemo'
+    ? 'v10-telemetry-hooks-avatar-chatstates-bookmarks-omemo-omemo2'
     : 'v8-telemetry-hooks-avatar-chatstates-bookmarks';
 }
 

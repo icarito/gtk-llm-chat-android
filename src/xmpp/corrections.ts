@@ -1,5 +1,6 @@
 /** XEP-0308: correcciones entrantes que resuelven (o hacen crecer) un mensaje. */
 import type { XmppMessage } from '@/types/xmpp';
+import { isEncrypted } from '@/xmpp/encryption';
 import { dismissNotificationForJid } from '@/xmpp/notifications';
 import { XmppHistory } from '@/xmpp/XmppHistory';
 import { removePendingActionsByMessage } from '@/xmpp/actions';
@@ -25,7 +26,7 @@ export function applyIncomingCorrection(
   // muestran como hora del mensaje. Sin esto, un mensaje resuelto minutos
   // después seguía ordenado y mostrado con la hora de su versión inicial.
   XmppHistory.applyCorrectionByStanzaId(
-    conversationJid, replaceId, body, timestamp, encryptionStatus === 'encrypted',
+    conversationJid, replaceId, body, timestamp, isEncrypted(encryptionStatus),
   ).catch(() => {});
   dismissNotificationForJid(conversationJid).catch(() => {});
   // La burbuja visible también: sin esto la corrección solo llega al SQLite y
@@ -55,7 +56,7 @@ export function applyIncomingCorrection(
     quickResponses: undefined,
     commands: undefined,
     correctedAtMs: Date.now(),
-    wasEncrypted: encryptionStatus === 'encrypted' || updated[idx]?.wasEncrypted,
+    wasEncrypted: isEncrypted(encryptionStatus) || updated[idx]?.wasEncrypted,
     encryptionStatus: encryptionStatus ?? updated[idx]?.encryptionStatus,
   };
   messages.setConversation(conversationJid, updated);

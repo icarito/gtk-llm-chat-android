@@ -2,6 +2,7 @@
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import type { XmppMessage } from '@/types/xmpp';
+import { isEncrypted } from '@/xmpp/encryption';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { decryptStanzaIfEncrypted } from '@/xmpp/decrypt';
 import { isGroupConversation } from '@/xmpp/muc';
@@ -240,7 +241,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
         msg.replaceId,
         msg.body,
         msg.timestamp,
-        msg.encryptionStatus === 'encrypted',
+        isEncrypted(msg.encryptionStatus),
       );
       if (applied) {
         const pending = fresh.findIndex((candidate) => candidate.id === msg.replaceId);
@@ -249,7 +250,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
             ...fresh[pending],
             body: msg.body,
             timestamp: msg.timestamp,
-            wasEncrypted: msg.encryptionStatus === 'encrypted' || fresh[pending].wasEncrypted,
+            wasEncrypted: isEncrypted(msg.encryptionStatus) || fresh[pending].wasEncrypted,
             encryptionStatus: msg.encryptionStatus ?? fresh[pending].encryptionStatus,
           };
         }
@@ -267,7 +268,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
       msg.quickResponses ?? null,
       msg.commands ?? null,
       stanzaId,
-      msg.encryptionStatus === 'encrypted',
+      isEncrypted(msg.encryptionStatus),
     )) {
       continue;
     }
@@ -286,7 +287,7 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
       null,
       null,
       null,
-      msg.encryptionStatus === 'encrypted',
+      isEncrypted(msg.encryptionStatus),
       ...(extra ? [extra] as [typeof extra] : []),
     );
     if (inserted) fresh.push(msg);
@@ -352,7 +353,7 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
     const direction = fromBare === ownBare ? 'out' : 'in';
     const senderJid = direction === 'out' ? ownBare : fromBare;
 
-    const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(message, senderJid);
+    const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(message, senderJid, false);
     mamEncryptionStatus = encryptionStatus;
     if (wasEncrypted && decryptedBody) {
       const encryptedNode = message.getChild('encrypted', 'eu.siacs.conversations.axolotl')
@@ -361,6 +362,8 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
         const idx = message.children.indexOf(encryptedNode);
         if (idx !== -1) message.children.splice(idx, 1);
       }
+      // Fuera el <body> de respaldo en claro (OMEMO 2 lo trae): getChildText tomaría el primero.
+      message.children = message.children.filter((c) => c.name !== 'body');
       message.children.push(xml('body', {}, decryptedBody));
 
       if (decryptedMetadata) {
@@ -395,7 +398,7 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
   const parsed = parseMamResult(mamResult, config.jid, rooms.get(roomJid)?.nick || botNick);
   if (parsed) {
     parsed.encryptionStatus = mamEncryptionStatus;
-    parsed.wasEncrypted = mamEncryptionStatus === 'encrypted';
+    parsed.wasEncrypted = isEncrypted(mamEncryptionStatus);
     buffer.push(parsed);
   }
   return;

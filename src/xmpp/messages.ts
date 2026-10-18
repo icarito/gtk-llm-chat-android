@@ -1,8 +1,11 @@
 /** Mensajes en memoria (store) y envío saliente (texto, reintento). */
 import { xml } from '@xmpp/client';
 import type { XmppMessage } from '@/types/xmpp';
+import { isEncrypted } from '@/xmpp/encryption';
 import { isNotificationGraceActive, notifyXmppMessage } from '@/xmpp/notifications';
+import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
+import { getOmemo2 } from '@/xmpp/omemo2';
 import { XmppHistory } from '@/xmpp/XmppHistory';
 import { expireMatchingQuickResponses, resolveApprovalActionsFromOwnMessage } from '@/xmpp/actions';
 import { CHAT_STATES_NS } from '@/xmpp/ns';
@@ -36,7 +39,39 @@ export function updateOutboundEncryptionStatus(
   id: string,
   encryptionStatus: XmppMessage['encryptionStatus'],
 ) {
-  patchOutbound(to, id, { wasEncrypted: encryptionStatus === 'encrypted', encryptionStatus });
+  patchOutbound(to, id, { wasEncrypted: isEncrypted(encryptionStatus), encryptionStatus });
+}
+
+/**
+ * Cifrado saliente por prioridad: OMEMO 2 (si el contacto tiene dispositivos
+ * OMEMO 2 y el cifrado está activo para él) > OMEMO legacy (Android; falla
+ * cerrado si no hay dispositivos) > null = texto plano. El llamador marca el
+ * estado visible ('none') cuando devuelve null.
+ */
+async function encryptOutbound(
+  to: string,
+  id: string,
+  body: string,
+  type: 'chat' | 'groupchat',
+): Promise<{ children: Element[]; status: 'omemo2' | 'omemo' } | null> {
+  if (type === 'chat') {
+    const engine = getOmemo2();
+    const children = engine ? await engine.encryptOutgoing(to, id, body) : null;
+    if (children) return { children, status: 'omemo2' };
+  }
+  const legacyOn = session.account?.omemoEnabled && Omemo.isEnabled()
+    && (type === 'groupchat' || (getOmemo2()?.isEnabledFor(to) ?? true));
+  if (!legacyOn) return null;
+  const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, body, type === 'groupchat');
+  if (!wasEncrypted || !encryptedXml) throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
+  return {
+    children: [
+      encryptedXml,
+      xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: 'eu.siacs.conversations.axolotl', name: 'OMEMO' }),
+      xml('store', { xmlns: 'urn:xmpp:hints' }),
+    ],
+    status: 'omemo',
+  };
 }
 
 export function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
@@ -84,32 +119,15 @@ export async function retryMessage(to: string, id: string): Promise<void> {
   if (!msg) return;
   updateOutboundSendState(to, id, 'pending');
   try {
-    let encrypted = false;
-    if (session.account?.omemoEnabled && Omemo.isEnabled()) {
-      const result = await Omemo.encryptMessage(to, msg.body, msg.type === 'groupchat');
-      if (!result.wasEncrypted || !result.encryptedXml) {
-        throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
-      }
-      await client.send(xml(
-        'message', { type: msg.type, to, id }, result.encryptedXml,
-        xml('encryption', {
-          xmlns: 'urn:xmpp:eme:0',
-          namespace: 'eu.siacs.conversations.axolotl',
-          name: 'OMEMO',
-        }),
-        xml('store', { xmlns: 'urn:xmpp:hints' }),
-        xml('active', { xmlns: CHAT_STATES_NS }),
-      ));
-      encrypted = true;
-      updateOutboundEncryptionStatus(to, id, 'encrypted');
-    } else {
-      await client.send(xml(
-        'message',
-        { type: msg.type, to, id },
-        xml('body', {}, msg.body),
-        xml('active', { xmlns: CHAT_STATES_NS }),
-      ));
-    }
+    const enc = await encryptOutbound(to, id, msg.body, msg.type === 'groupchat' ? 'groupchat' : 'chat');
+    await client.send(xml(
+      'message',
+      { type: msg.type, to, id },
+      ...(enc ? enc.children : [xml('body', {}, msg.body)]),
+      xml('active', { xmlns: CHAT_STATES_NS }),
+    ));
+    const encrypted = enc !== null;
+    updateOutboundEncryptionStatus(to, id, enc?.status ?? 'none');
     updateOutboundSendState(to, id, 'sent');
     XmppHistory.recordMessage(
       to, msg.body, 'out', msg.timestamp, null,
@@ -160,34 +178,24 @@ export async function sendMessage(
   const extra = historyExtra({ replyTo, senderNick } as XmppMessage);
 
   try {
-    if (session.account?.omemoEnabled && Omemo.isEnabled()) {
-      const isGroup = type === 'groupchat';
-      const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, body, isGroup);
-      if (wasEncrypted && encryptedXml) {
-        await client.send(xml(
-          'message',
-          { type, to, id },
-          encryptedXml,
-          xml('encryption', {
-            xmlns: 'urn:xmpp:eme:0',
-            namespace: 'eu.siacs.conversations.axolotl',
-            name: 'OMEMO',
-          }),
-          xml('store', { xmlns: 'urn:xmpp:hints' }),
-          // XEP-0085: un mensaje con cuerpo implica estado active.
-          xml('active', { xmlns: CHAT_STATES_NS }),
-          // Cifrado: no hay fallback de cita en claro, pero el <reply> sí viaja.
-          ...(reply ? [xml('reply', { xmlns: NS_REPLY, id: reply.id, to: reply.jid })] : []),
-        ));
-        updateOutboundEncryptionStatus(to, id, 'encrypted');
-        updateOutboundSendState(to, id, 'sent');
-        XmppHistory.recordMessage(
-          to, body, 'out', timestamp, null,
-          null, null, id, null, null, null, null, null, true, extra,
-        ).catch(() => {});
-        return id;
-      }
-      throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
+    const enc = await encryptOutbound(to, id, body, type);
+    if (enc) {
+      await client.send(xml(
+        'message',
+        { type, to, id },
+        ...enc.children,
+        // XEP-0085: un mensaje con cuerpo implica estado active.
+        xml('active', { xmlns: CHAT_STATES_NS }),
+        // Cifrado: no hay fallback de cita en claro, pero el <reply> sí viaja.
+        ...(reply ? [xml('reply', { xmlns: NS_REPLY, id: reply.id, to: reply.jid })] : []),
+      ));
+      updateOutboundEncryptionStatus(to, id, enc.status);
+      updateOutboundSendState(to, id, 'sent');
+      XmppHistory.recordMessage(
+        to, body, 'out', timestamp, null,
+        null, null, id, null, null, null, null, null, true, extra,
+      ).catch(() => {});
+      return id;
     }
 
     const base = reply
@@ -201,6 +209,7 @@ export async function sendMessage(
       xml('active', { xmlns: CHAT_STATES_NS }),
     );
     await client.send(stanza);
+    if (type === 'chat') updateOutboundEncryptionStatus(to, id, 'none');
     updateOutboundSendState(to, id, 'sent');
   } catch (error) {
     updateOutboundSendState(to, id, 'failed');

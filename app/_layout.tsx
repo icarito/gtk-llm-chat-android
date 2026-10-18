@@ -1,3 +1,4 @@
+import 'react-native-get-random-values'; // antes que node-polyfills/crypto (su getRandomValues usa Math.random)
 import '../node-polyfills/crypto';
 import '../node-polyfills/process';
 import { useEffect } from 'react';

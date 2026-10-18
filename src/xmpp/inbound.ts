@@ -1,6 +1,7 @@
 /** Mensajes entrantes en vivo: carbons (XEP-0280) y chat/groupchat directos. */
 import type { Element } from '@xmpp/xml';
 import type { XmppMessage } from '@/types/xmpp';
+import { isEncrypted } from '@/xmpp/encryption';
 import { XmppHistory } from '@/xmpp/XmppHistory';
 import { decryptStanzaIfEncrypted } from '@/xmpp/decrypt';
 import { CHAT_STATES_NS } from '@/xmpp/ns';
@@ -143,7 +144,7 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
           carbonMsg.quickResponses ?? null, carbonMsg.commands ?? null,
           msgId, carbonMsg.oobUrl ?? null,
           null, null, null, null,
-          carbonMsg.encryptionStatus === 'encrypted', historyExtra(carbonMsg)).catch(() => {});
+          isEncrypted(carbonMsg.encryptionStatus), historyExtra(carbonMsg)).catch(() => {});
       }
     }
     return;
@@ -279,7 +280,7 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
     null,
     null,
     null,
-    msg.encryptionStatus === 'encrypted',
+    isEncrypted(msg.encryptionStatus),
     historyExtra(msg),
   ).catch(() => {});
 }
