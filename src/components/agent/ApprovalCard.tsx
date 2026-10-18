@@ -125,11 +125,18 @@ export function ApprovalCard({
   onPress,
 }: ApprovalCardProps) {
   const [tick, setTick] = useState(() => Date.now());
+  // Una tarjeta sellada (decisión o plazo vencido) ya no necesita reloj: sin
+  // este corte cada tarjeta vieja del historial seguía re-renderizando cada segundo.
+  const decided = decision !== undefined && sealFor(decision) !== null;
   useEffect(() => {
-    if (nowMs !== undefined || !expiresAtMs) return;
-    const id = setInterval(() => setTick(Date.now()), 1000);
+    if (nowMs !== undefined || !expiresAtMs || decided || Date.now() >= expiresAtMs) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      setTick(now);
+      if (now >= expiresAtMs) clearInterval(id);
+    }, 1000);
     return () => clearInterval(id);
-  }, [nowMs, expiresAtMs]);
+  }, [nowMs, expiresAtMs, decided]);
   const now = nowMs ?? tick;
 
   // Total del plazo = lo que quedaba al primer render con expiración.
