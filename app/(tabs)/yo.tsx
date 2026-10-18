@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/constants/theme';
@@ -45,7 +45,7 @@ export default function YoScreen() {
     ], { cancelable: true });
   }, [online, change]);
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>Yo</Text>
         <TouchableOpacity style={styles.avatar} onPress={onAvatar} disabled={busy || !account} accessibilityLabel="Cambiar foto de perfil">
@@ -66,7 +66,7 @@ export default function YoScreen() {
           <Text style={styles.logoutText}>Desconectar</Text>
         </TouchableOpacity>
       )}
-    </View>
+    </ScrollView>
   );
 }
 

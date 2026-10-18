@@ -5,6 +5,7 @@
  * (jid + nodo), que se pide (items max 1) y al que nos suscribimos explícito.
  * Sin fuente configurada no se pide nada y nada se inventa.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { xml } from '@xmpp/client';
 import { useSyncExternalStore } from 'react';
 import type { Element } from '@xmpp/xml';
@@ -67,8 +68,36 @@ export function handleFleetEvent(from: string | undefined, node: string | undefi
   return true;
 }
 
+const SOURCE_KEY = 'fleet.source';
+let loaded = false;
+
+/** Fuente guardada en ajustes ({jid,node}) o null. */
+export async function getStoredFleetSource(): Promise<{ jid: string; node: string } | null> {
+  try {
+    const raw = await AsyncStorage.getItem(SOURCE_KEY);
+    const v = raw ? (JSON.parse(raw) as { jid?: unknown; node?: unknown }) : null;
+    return v && typeof v.jid === 'string' && typeof v.node === 'string' ? { jid: v.jid, node: v.node } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Guarda la fuente (vacía la borra), la aplica y pide el snapshot. */
+export async function saveFleetSource(jid: string, node: string): Promise<void> {
+  loaded = true;
+  if (jid && node) await AsyncStorage.setItem(SOURCE_KEY, JSON.stringify({ jid: bareJid(jid).toLowerCase(), node }));
+  else await AsyncStorage.removeItem(SOURCE_KEY);
+  setFleetSource(jid, node);
+  await fetchFleet();
+}
+
 /** Pide el último valor y se suscribe (xat: request_pubsub_items + subscribe_pubsub). */
 export async function fetchFleet(): Promise<void> {
+  if (!loaded) {
+    loaded = true;
+    const stored = await getStoredFleetSource();
+    if (stored) setFleetSource(stored.jid, stored.node);
+  }
   const client = usableClient();
   if (!client || !source) return;
   const { jid, node } = source;
