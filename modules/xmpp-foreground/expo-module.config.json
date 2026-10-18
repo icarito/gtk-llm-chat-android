@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["XmppServiceModule"] },
+  "android": { "modules": ["org.fuentelibre.xmppforeground.XmppServiceModule"] }
+}

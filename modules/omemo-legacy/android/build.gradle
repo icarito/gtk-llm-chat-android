@@ -1,0 +1,19 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.gtkllmchat.xmpp.omemo'
+version = '1.0.0'
+
+android {
+  namespace "com.gtkllmchat.xmpp.omemo"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  implementation("org.whispersystems:signal-protocol-android:2.8.1")
+}

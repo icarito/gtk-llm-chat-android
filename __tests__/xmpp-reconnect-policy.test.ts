@@ -3,7 +3,7 @@
  * a dropped socket, a dead connect and an auth failure all go through the single
  * backoff in connection.ts (and @xmpp/reconnect is switched off).
  */
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'eventemitter3';
 
 const mockClients: MockClient[] = [];
 let mockStart: 'online' | 'hang' | 'auth-fail' | 'fail' = 'online';

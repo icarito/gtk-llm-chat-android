@@ -13,6 +13,11 @@ module.exports = () => {
       googleServicesFile: './google-services.json',
     };
   }
+  const buildNumber = parseInt(process.env.BUILD_NUMBER ?? '', 10);
+  if (buildNumber > 0) {
+    config.android = { ...config.android, versionCode: buildNumber };
+    config.ios = { ...config.ios, buildNumber: String(buildNumber) };
+  }
   config.extra = {
     ...(config.extra ?? {}),
     eas: {

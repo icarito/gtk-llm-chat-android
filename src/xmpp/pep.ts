@@ -3,7 +3,7 @@
  * device list de OMEMO. Los nuevos parsers PEP viven en src/xmpp/pep/.
  */
 import { xml } from '@xmpp/client';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import {

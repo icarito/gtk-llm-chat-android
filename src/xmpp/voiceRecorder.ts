@@ -1,6 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Alert } from 'react-native';
-import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
+import {
+  AudioModule,
+  AudioQuality,
+  IOSOutputFormat,
+  setAudioModeAsync,
+  type AudioRecorder,
+  type RecordingOptions,
+} from 'expo-audio';
 import { RECORDING_MIME } from './audioUtils';
 
 export type RecordingState =
@@ -18,21 +25,22 @@ export interface VoiceCapture {
   mimeType: string;
 }
 
-const recordingOptions = {
+const recordingOptions: RecordingOptions = {
+  extension: '.m4a',
+  sampleRate: 44100,
+  numberOfChannels: 1,
+  bitRate: 128000,
   android: {
     extension: '.m4a',
-    outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-    audioEncoder: Audio.AndroidAudioEncoder.AAC,
+    outputFormat: 'mpeg4',
+    audioEncoder: 'aac',
     sampleRate: 44100,
-    numberOfChannels: 1,
   },
   ios: {
     extension: '.m4a',
-    outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
-    audioQuality: Audio.IOSAudioQuality.MEDIUM,
+    outputFormat: IOSOutputFormat.MPEG4AAC,
+    audioQuality: AudioQuality.MEDIUM,
     sampleRate: 44100,
-    numberOfChannels: 1,
-    bitRate: 128000,
   },
   web: {},
 };
@@ -45,7 +53,7 @@ export function useVoiceRecorder() {
   // se calculaba una vez, al soltar, así que no había manera de mostrar un
   // contador que creciera mientras se graba.
   const [elapsedMs, setElapsedMs] = useState(0);
-  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingRef = useRef<AudioRecorder | null>(null);
   const startTimeRef = useRef<number>(0);
 
   useEffect(() => {
@@ -57,7 +65,7 @@ export function useVoiceRecorder() {
   }, [recordingState]);
 
   const requestPermission = useCallback(async () => {
-    const { granted } = await Audio.requestPermissionsAsync();
+    const { granted } = await AudioModule.requestRecordingPermissionsAsync();
     if (!granted) {
       Alert.alert(
         'Permiso denegado',
@@ -74,18 +82,17 @@ export function useVoiceRecorder() {
       // stopRecording deja allowsRecordingIOS en false al terminar (para no
       // acaparar el micrófono entre grabaciones). Sin re-habilitarlo aquí,
       // solo la primera grabación de la vida del componente funcionaba: las
-      // siguientes creaban el Audio.Recording igual, pero con el modo de
+      // siguientes creaban el AudioRecorder igual, pero con el modo de
       // audio equivocado — en Android eso produce una grabación vacía o
       // directamente inútil sin ningún error visible.
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        interruptionMode: 'doNotMix',
       });
-      const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(recordingOptions);
-      await recording.startAsync();
+      const recording = new AudioModule.AudioRecorder(recordingOptions);
+      await recording.prepareToRecordAsync();
+      recording.record();
       recordingRef.current = recording;
       startTimeRef.current = Date.now();
       setElapsedMs(0);
@@ -102,19 +109,18 @@ export function useVoiceRecorder() {
     if (!rec) return;
     recordingRef.current = null;
     try {
-      await rec.stopAndUnloadAsync();
+      await rec.stop();
     } catch {
       // ignore
     }
-    Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      shouldDuckAndroid: false,
-      playThroughEarpieceAndroid: false,
+    setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      shouldRouteThroughEarpiece: false,
     }).catch(() => {});
     const duration = (Date.now() - startTimeRef.current) / 1000;
-    const uri = rec.getURI();
+    const uri = rec.uri;
     if (discard || !uri || duration < 3) {
       setRecordingState('idle');
       setCapture(null);
