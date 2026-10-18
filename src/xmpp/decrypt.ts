@@ -2,6 +2,8 @@ import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import { bareJid } from '@/xmpp/parse';
 import { getOmemo2 } from '@/xmpp/omemo2';
+import { materializeAesgcm } from '@/xmpp/media';
+import { AESGCM_SCHEME } from '@/omemo2';
 
 /**
  * Descifra una stanza entrante (en vivo, carbon o MAM). `fromJid` es el
@@ -23,7 +25,15 @@ export async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string,
     } else {
       const r = await engine.decrypt(stanza, bareJid(fromJid), live);
       if (r.status === 'omemo2' || !legacyEncrypted) {
-        return { decryptedBody: r.body, wasEncrypted: true, encryptionStatus: r.status };
+        const attachmentLocalUri = r.body.startsWith(AESGCM_SCHEME)
+          ? await materializeAesgcm(r.body)
+          : null;
+        return {
+          decryptedBody: r.body,
+          wasEncrypted: true,
+          encryptionStatus: r.status,
+          attachmentLocalUri,
+        };
       }
     }
   }
