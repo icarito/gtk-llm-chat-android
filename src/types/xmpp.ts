@@ -56,6 +56,8 @@ export interface XmppMessage {
   /** XEP-0424: el autor lo retractó. Se conserva como lápida (el body queda). */
   retracted?: boolean;
   oobUrl?: string | null;
+  /** XEP-0454: file:// cacheado del adjunto aesgcm ya descifrado. */
+  localUri?: string | null;
   attachmentDuration?: number | null;
   attachmentMimeType?: string | null;
   /** Epoch ms de la última corrección XEP-0308 aplicada — mientras sea

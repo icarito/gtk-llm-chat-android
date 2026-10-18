@@ -6,6 +6,8 @@ import { XmppHistory } from '@/xmpp/XmppHistory';
 import { DISCO_INFO_NS, DISCO_ITEMS_NS, HTTP_UPLOAD_NS, OOB_NS } from '@/xmpp/ns';
 import { session } from '@/xmpp/session';
 import { addMessageToMap } from '@/xmpp/messages';
+import { getOmemo2 } from '@/xmpp/omemo2';
+import { buildAesgcmUrl, encryptMedia } from '@/omemo2';
 
 // JID del componente XEP-0363. undefined = sin descubrir; null = el server no
 // tiene uno (no reintentar el disco en cada envío).
@@ -102,6 +104,10 @@ async function requestUploadSlot(
  * `blob` son los bytes ya leídos (el picker/FS los provee). Devuelve el
  * get_uri publicado. Igual que el plugin y el cliente GTK: el link va en el
  * body Y en <x jabber:x:oob>, para que lo vea cualquier cliente.
+ *
+ * En un chat 1:1 con OMEMO 2 el archivo se cifra ANTES de subirlo
+ * (XEP-0454) y la URL `aesgcm://…#iv+key` viaja como cuerpo del mensaje
+ * cifrado, nunca como OOB en claro. Sin OMEMO 2 la subida no cambia.
  */
 export async function sendFile(
   to: string,
@@ -115,11 +121,28 @@ export async function sendFile(
   const host = await resolveUploadHost();
   if (!host) throw new Error('El servidor no tiene servicio de subida (XEP-0363)');
 
-  const slot = await requestUploadSlot(host, filename, blob.size, contentType);
+  // Sólo 1:1: en groupchat no hay OMEMO 2 (el cifrado de archivos no aplica).
+  const omemo2 = type === 'chat' ? getOmemo2() : null;
+  const omemo2Eligible = omemo2 ? await omemo2.canEncryptTo(to) : false;
+  let uploadBlob = blob;
+  let uploadType = contentType;
+  let media: { key: Uint8Array; iv: Uint8Array } | null = null;
+  if (omemo2Eligible) {
+    const plaintext = new Uint8Array(await blob.arrayBuffer());
+    const enc = encryptMedia(plaintext);
+    // Copia a un ArrayBuffer propio: BlobPart exige ArrayBuffer, no ArrayBufferLike.
+    const ciphertext = new Uint8Array(enc.ciphertext.length);
+    ciphertext.set(enc.ciphertext);
+    uploadBlob = new Blob([ciphertext.buffer], { type: 'application/octet-stream' });
+    uploadType = 'application/octet-stream';
+    media = { key: enc.key, iv: enc.iv };
+  }
+
+  const slot = await requestUploadSlot(host, filename, uploadBlob.size, uploadType);
   const putResponse = await fetch(slot.putUrl, {
     method: 'PUT',
-    body: blob,
-    headers: { 'Content-Type': contentType, ...slot.headers },
+    body: uploadBlob,
+    headers: { 'Content-Type': uploadType, ...slot.headers },
   });
   if (!putResponse.ok) {
     throw new Error(`La subida falló (HTTP ${putResponse.status})`);
@@ -127,6 +150,33 @@ export async function sendFile(
 
   const id = `oc-${Date.now().toString(36)}`;
   const timestamp = new Date().toISOString();
+
+  if (omemo2 && media) {
+    const aesgcmUrl = buildAesgcmUrl(slot.getUrl, media.key, media.iv);
+    const encryptedChildren = await omemo2.encryptOutgoing(to, id, aesgcmUrl);
+    if (!encryptedChildren) {
+      throw new Error(`No hay dispositivos OMEMO 2 utilizables para ${to}`);
+    }
+    await client.send(xml('message', { type, to, id }, ...encryptedChildren));
+    addMessageToMap({
+      id,
+      from: session.account?.jid ?? '',
+      to,
+      type,
+      body: aesgcmUrl,
+      timestamp,
+      direction: 'out',
+      isGroup: false,
+      wasEncrypted: true,
+      encryptionStatus: 'omemo2',
+    });
+    XmppHistory.recordMessage(
+      to, aesgcmUrl, 'out', timestamp, null,
+      null, null, null, null, null, null, null, null, true,
+    )
+      .catch(() => {});
+    return aesgcmUrl;
+  }
 
   if (session.account?.omemoEnabled && Omemo.isEnabled()) {
     const isGroup = type === 'groupchat';

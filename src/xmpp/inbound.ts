@@ -74,7 +74,8 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
       // XEP-0444/0424 hechas desde otro dispositivo nuestro (o recibidas en otro recurso).
       if (handleAnnotation(message, partnerJid, direction === 'out' ? config.jid : fromAttr, direction === 'out')) return;
 
-      const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(message, senderJid);
+      const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus, attachmentLocalUri } =
+        await decryptStanzaIfEncrypted(message, senderJid);
       const rawBodyText = wasEncrypted ? (decryptedBody || '') : (replyBody(message) ?? message.getChildText('body') ?? '');
       const carbonBody = bodyWithOob(message, rawBodyText);
 
@@ -119,6 +120,7 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
           commands,
           replyTo,
           oobUrl,
+          localUri: attachmentLocalUri,
           wasEncrypted,
           encryptionStatus,
         };
@@ -163,7 +165,8 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
   // XEP-0444 / XEP-0424: no son burbujas, se agregan sobre el mensaje objetivo.
   if (handleAnnotation(stanza, platformId, from, false)) return;
 
-  const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(stanza, from);
+  const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus, attachmentLocalUri } =
+    await decryptStanzaIfEncrypted(stanza, from);
   // XEP-0461: el fallback de la cita no es parte del texto del mensaje.
   const rawBodyText = wasEncrypted ? (decryptedBody || '') : (replyBody(stanza) ?? stanza.getChildText('body') ?? '');
   const body = bodyWithOob(stanza, rawBodyText);
@@ -243,6 +246,7 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
     commands,
     replyTo,
     oobUrl,
+    localUri: attachmentLocalUri,
     wasEncrypted,
     encryptionStatus,
     stanzaId,

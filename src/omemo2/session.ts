@@ -49,10 +49,15 @@ interface DeviceRecord {
   deviceId: number;
   seed: string;
   spk: { id: number; priv: string; pub: string; sig: string };
+  /** Epoch ms de creación del spk actual; ausente en dispositivos antiguos. */
+  spkCreatedAt?: number;
   oldSpks: { id: number; priv: string }[];
   prekeys: { id: number; priv: string; pub: string }[];
   nextPkId: number;
 }
+
+/** XEP-0384 §4.5: rotar el signed prekey al menos una vez por semana. */
+export const SPK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const KEY_DEVICE = 'omemo2:device';
 const sessionKey = (d: DeviceRef) => `omemo2:session:${d.jid}:${d.rid}`;
@@ -66,15 +71,26 @@ export class SessionManager {
   ) {}
 
   // Carga el dispositivo del store o crea uno nuevo (identidad, spk y `prekeyCount` prekeys).
-  static async load(store: OmemoStore, prekeyCount = 100): Promise<SessionManager> {
+  // `now` es inyectable para pruebas de rotación del spk.
+  static async load(store: OmemoStore, prekeyCount = 100, now = Date.now()): Promise<SessionManager> {
     const raw = await store.get(KEY_DEVICE);
-    if (raw) return new SessionManager(store, JSON.parse(raw));
+    if (raw) {
+      const dev: DeviceRecord = JSON.parse(raw);
+      if (typeof dev.spkCreatedAt !== 'number') {
+        // Dispositivo anterior a la rotación semanal: el spk ya existe, así
+        // que se toma AHORA como fecha de creación (no se rota de golpe).
+        dev.spkCreatedAt = now;
+        await store.set(KEY_DEVICE, JSON.stringify(dev));
+      }
+      return new SessionManager(store, dev);
+    }
     const id = generateIdentity();
     const spk = generateSignedPreKey(1, id.seed);
     const m = new SessionManager(store, {
       deviceId: (new DataView(randomBytes(4).buffer).getUint32(0) % 0x7ffffffe) + 1,
       seed: bytesToHex(id.seed),
       spk: { id: spk.id, priv: bytesToHex(spk.priv), pub: bytesToHex(spk.pub), sig: bytesToHex(spk.sig) },
+      spkCreatedAt: now,
       oldSpks: [],
       prekeys: [],
       nextPkId: 1,
@@ -119,14 +135,33 @@ export class SessionManager {
   }
 
   // Nuevo signed prekey; el anterior se conserva para kex en vuelo. Republicar el bundle.
-  rotateSignedPreKey(): Promise<void> {
+  rotateSignedPreKey(now = Date.now()): Promise<void> {
     return this.locked(async () => {
-      const d = this.dev;
-      d.oldSpks = [{ id: d.spk.id, priv: d.spk.priv }, ...d.oldSpks].slice(0, 2);
-      const spk = generateSignedPreKey(d.spk.id + 1, hexToBytes(d.seed));
-      d.spk = { id: spk.id, priv: bytesToHex(spk.priv), pub: bytesToHex(spk.pub), sig: bytesToHex(spk.sig) };
+      this.rotateLocked(now);
       await this.saveDevice();
     });
+  }
+
+  /**
+   * Rota el spk sólo si superó `maxAgeMs` (por defecto una semana). True si
+   * rotó. `now` inyectable para pruebas.
+   */
+  rotateSignedPreKeyIfOlderThan(maxAgeMs = SPK_MAX_AGE_MS, now = Date.now()): Promise<boolean> {
+    return this.locked(async () => {
+      const createdAt = this.dev.spkCreatedAt ?? now;
+      if (now - createdAt < maxAgeMs) return false;
+      this.rotateLocked(now);
+      await this.saveDevice();
+      return true;
+    });
+  }
+
+  private rotateLocked(now: number) {
+    const d = this.dev;
+    d.oldSpks = [{ id: d.spk.id, priv: d.spk.priv }, ...d.oldSpks].slice(0, 2);
+    const spk = generateSignedPreKey(d.spk.id + 1, hexToBytes(d.seed));
+    d.spk = { id: spk.id, priv: bytesToHex(spk.priv), pub: bytesToHex(spk.pub), sig: bytesToHex(spk.sig) };
+    d.spkCreatedAt = now;
   }
 
   async hasSession(dev: DeviceRef): Promise<boolean> {

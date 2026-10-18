@@ -344,6 +344,7 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
   if (!buffer) return;
 
   let mamEncryptionStatus: XmppMessage['encryptionStatus'];
+  let mamLocalUri: string | null | undefined;
   const forwarded = mamResult.getChild('forwarded', 'urn:xmpp:forward:0');
   const message = forwarded?.getChild('message');
   if (message) {
@@ -353,8 +354,10 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
     const direction = fromBare === ownBare ? 'out' : 'in';
     const senderJid = direction === 'out' ? ownBare : fromBare;
 
-    const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus } = await decryptStanzaIfEncrypted(message, senderJid, false);
+    const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus, attachmentLocalUri } =
+      await decryptStanzaIfEncrypted(message, senderJid, false);
     mamEncryptionStatus = encryptionStatus;
+    mamLocalUri = attachmentLocalUri;
     if (wasEncrypted && decryptedBody) {
       const encryptedNode = message.getChild('encrypted', 'eu.siacs.conversations.axolotl')
         || message.getChild('encrypted', 'urn:xmpp:omemo:2');
@@ -399,6 +402,7 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
   if (parsed) {
     parsed.encryptionStatus = mamEncryptionStatus;
     parsed.wasEncrypted = isEncrypted(mamEncryptionStatus);
+    parsed.localUri = mamLocalUri;
     buffer.push(parsed);
   }
   return;

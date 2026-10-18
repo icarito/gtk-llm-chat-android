@@ -1,6 +1,8 @@
 export * from './identity';
+export * from './keyTransport';
 export * from './x3dh';
 export { DoubleRatchet, MAX_SKIP } from './doubleRatchet';
+export * from './media';
 export * from './messages';
 export * from './payload';
 export * from './store';

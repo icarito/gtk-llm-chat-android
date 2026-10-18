@@ -19,7 +19,9 @@
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import {
+  KeyTransportCounter,
   SessionManager,
+  SPK_MAX_AGE_MS,
   b64decode,
   b64encode,
   buildEnvelope,
@@ -97,7 +99,7 @@ export class Omemo2Engine {
   private listeners = new Set<() => void>();
   private identityListeners = new Set<(c: IdentityChange) => void>();
   private reported = new Set<string>();
-  private recv = new Map<string, number>();
+  private kt: KeyTransportCounter;
   private snapshots = new Map<string, Omemo2Device[]>();
 
   private constructor(
@@ -106,6 +108,7 @@ export class Omemo2Engine {
     private readonly state: WireState,
   ) {
     this.ownBare = bareJid(deps.jid);
+    this.kt = new KeyTransportCounter(deps.store);
   }
 
   static async create(deps: Omemo2Deps): Promise<Omemo2Engine> {
@@ -211,6 +214,16 @@ export class Omemo2Engine {
         xml('spks', {}, b64encode(b.spkSig)),
         xml('ik', {}, b64encode(b.ik)),
         xml('prekeys', {}, ...b.prekeys.map((p) => xml('pk', { id: String(p.id) }, b64encode(p.pub)))))));
+  }
+
+  /**
+   * XEP-0384 §4.5: rota el signed prekey si tiene más de una semana y
+   * republica el bundle. True si rotó. `now` inyectable para pruebas.
+   */
+  async rotateSpkIfStale(now = Date.now()): Promise<boolean> {
+    if (!(await this.sm.rotateSignedPreKeyIfOlderThan(SPK_MAX_AGE_MS, now))) return false;
+    await this.publishBundle();
+    return true;
   }
 
   private async publishDevices(): Promise<void> {
@@ -381,7 +394,7 @@ export class Omemo2Engine {
     for (const dev of targets) if (await this.ensureSession(dev)) ready.push(dev);
     if (!ready.some((d) => d.jid === peer)) throw new Error(`omemo2: sin dispositivos utilizables para ${peer}`);
     const msg = await this.sm.encryptForDevices(ready, buildEnvelope(body, { to: peer, from: this.ownBare }));
-    ready.forEach((d) => this.recv.delete(tk(d.jid, d.rid)));
+    await Promise.all(ready.map((d) => this.kt.reset(d)));
     await this.deps.store.set(plainKey(this.ownBare, id), body); // la copia MAM propia no lleva clave para este dispositivo
     return [
       this.encryptedElement(msg, true),
@@ -393,7 +406,7 @@ export class Omemo2Engine {
 
   private async sendKeyTransport(dev: DeviceRef): Promise<void> {
     const msg = await this.sm.encryptForDevices([dev], buildEnvelope('', { to: dev.jid, from: this.ownBare }));
-    this.recv.delete(tk(dev.jid, dev.rid));
+    await this.kt.reset(dev);
     await this.deps.send(xml('message', { type: 'chat', to: dev.jid },
       this.encryptedElement(msg, false), xml('store', { xmlns: 'urn:xmpp:hints' })));
   }
@@ -455,8 +468,7 @@ export class Omemo2Engine {
     if (id) await this.deps.store.set(plainKey(dev.jid, id), body);
 
     if (live) {
-      const n = (this.recv.get(tk(dev.jid, dev.rid)) ?? 0) + 1;
-      this.recv.set(tk(dev.jid, dev.rid), n);
+      const n = await this.kt.increment(dev);
       if (n >= KEY_TRANSPORT_AFTER) await this.sendKeyTransport(dev).catch((e) => console.warn('[OMEMO2] key transport failed', e));
     }
     return { body, status: 'omemo2' };
@@ -493,6 +505,9 @@ export async function startOmemo2(jid: string): Promise<void> {
     engine = await creating;
     listeners.forEach((cb) => cb());
   }
+  // Rotación semanal del signed prekey (XEP-0384 §4.5); publishOwn republica
+  // el bundle con el spk nuevo. Un fallo acá no debe impedir arrancar OMEMO.
+  await engine.rotateSpkIfStale().catch((e) => console.warn('[OMEMO2] spk rotation failed', e));
   await engine.publishOwn();
 }
 
