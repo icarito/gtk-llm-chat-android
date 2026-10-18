@@ -13,7 +13,7 @@ jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock
 jest.mock('expo-audio', () => ({ createAudioPlayer: jest.fn(), setAudioModeAsync: jest.fn() }));
 jest.mock('expo-router', () => ({ useFocusEffect: jest.fn() }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
-jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
+jest.mock('@/chat/attachPicker', () => ({ chooseAttachment: jest.fn() }));
 jest.mock('@/xmpp/XmppContext', () => ({ useConversation: () => [mockMsg] }));
 jest.mock('@/xmpp/XmppService', () => ({ XmppService: { getAccount: () => ({ jid: 'me@x.org' }), getState: () => 'online' } }));
 jest.mock('@/chat/stores', () => ({
