@@ -95,8 +95,9 @@ class OmemoService {
     return !!getXmppOmemoModule();
   }
 
+  /** Activado Y con módulo nativo (sólo Android): en iOS no hay OMEMO legacy y, sin esto, salas y adjuntos fallaban cerrado. */
   isEnabled(): boolean {
-    return this.omemoEnabled;
+    return this.omemoEnabled && this.isSupported();
   }
 
   getDeviceId(): number {

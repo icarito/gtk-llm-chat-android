@@ -8,7 +8,23 @@ import { session } from '@/xmpp/session';
 import { addMessageToMap } from '@/xmpp/messages';
 import { getOmemo2 } from '@/xmpp/omemo2';
 import { cacheSentMedia } from '@/xmpp/media';
-import { buildAesgcmUrl, encryptMedia } from '@/omemo2';
+import { b64decode, buildAesgcmUrl, encryptMedia } from '@/omemo2';
+
+/**
+ * Bytes de un Blob en RN: su Blob no implementa arrayBuffer() y FileReader no
+ * tiene readAsArrayBuffer; readAsDataURL sí existe en Android/iOS.
+ */
+function blobBytes(blob: Blob): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('No se pudo leer el archivo'));
+    reader.onload = () => {
+      const url = String(reader.result ?? '');
+      resolve(b64decode(url.slice(url.indexOf(',') + 1)));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
 
 // JID del componente XEP-0363. undefined = sin descubrir; null = el server no
 // tiene uno (no reintentar el disco en cada envío).
@@ -125,24 +141,24 @@ export async function sendFile(
   // Sólo 1:1: en groupchat no hay OMEMO 2 (el cifrado de archivos no aplica).
   const omemo2 = type === 'chat' ? getOmemo2() : null;
   const omemo2Eligible = omemo2 ? await omemo2.canEncryptTo(to) : false;
-  let uploadBlob = blob;
+  // RN: el constructor de Blob no acepta ArrayBuffer; el ciphertext sube como Uint8Array.
+  let uploadBody: Blob | Uint8Array = blob;
+  let uploadSize = blob.size;
   let uploadType = contentType;
   let media: { key: Uint8Array; iv: Uint8Array; plaintext: Uint8Array } | null = null;
   if (omemo2Eligible) {
-    const plaintext = new Uint8Array(await blob.arrayBuffer());
+    const plaintext = await blobBytes(blob);
     const enc = encryptMedia(plaintext);
-    // Copia a un ArrayBuffer propio: BlobPart exige ArrayBuffer, no ArrayBufferLike.
-    const ciphertext = new Uint8Array(enc.ciphertext.length);
-    ciphertext.set(enc.ciphertext);
-    uploadBlob = new Blob([ciphertext.buffer], { type: 'application/octet-stream' });
+    uploadBody = enc.ciphertext;
+    uploadSize = enc.ciphertext.length;
     uploadType = 'application/octet-stream';
     media = { key: enc.key, iv: enc.iv, plaintext };
   }
 
-  const slot = await requestUploadSlot(host, filename, uploadBlob.size, uploadType);
+  const slot = await requestUploadSlot(host, filename, uploadSize, uploadType);
   const putResponse = await fetch(slot.putUrl, {
     method: 'PUT',
-    body: uploadBlob,
+    body: uploadBody as BodyInit,
     headers: { 'Content-Type': uploadType, ...slot.headers },
   });
   if (!putResponse.ok) {
