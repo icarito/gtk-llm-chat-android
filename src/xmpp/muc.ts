@@ -1,7 +1,7 @@
 /** MUC (XEP-0045): manejo mínimo de groupchat. */
 import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
-import { messages } from '@/xmpp/store';
+import { messages, rooms } from '@/xmpp/store';
 
 export function isGroupJidEx(barejid: string, mucDomain?: string): boolean {
   if (!mucDomain) return false;
@@ -15,7 +15,7 @@ export function isGroupJidEx(barejid: string, mucDomain?: string): boolean {
  * lives on the room JID, not in the account's own archive.
  */
 export function isGroupConversation(bareJid: string): boolean {
-  return messages.getConversation(bareJid).some((m) => m.type === 'groupchat' || m.isGroup);
+  return rooms.get(bareJid) !== undefined || messages.getConversation(bareJid).some((m) => m.type === 'groupchat' || m.isGroup);
 }
 
 export function messageMentionsBot(stanza: Element, body: string, nick: string, jid: string): boolean {

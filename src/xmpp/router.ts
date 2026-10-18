@@ -6,6 +6,7 @@ import type { Element } from '@xmpp/xml';
 import type { StanzaCtx } from '@/xmpp/session';
 import { handleDiscoInfoGet } from '@/xmpp/disco';
 import { handlePresence } from '@/xmpp/roster';
+import { handleBookmarksEvent, handleMucMessage, handleMucPresence } from '@/xmpp/rooms';
 import { handlePubsubEvent } from '@/xmpp/pep';
 import { handleMamResult, isMamResult } from '@/xmpp/mam';
 import { handleCarbon, handleChatMessage, isCarbon } from '@/xmpp/inbound';
@@ -15,9 +16,15 @@ export async function routeStanza(stanza: Element, ctx: StanzaCtx): Promise<void
   if (handleDiscoInfoGet(stanza, ctx)) return;
 
   if (stanza.is('presence')) {
+    // Presencia de sala ANTES que la de contactos: un ocupante nunca debe
+    // poner en verde a un contacto (ver rooms.ts).
+    if (handleMucPresence(stanza, ctx)) return;
     handlePresence(stanza, ctx);
     return;
   }
+
+  // XEP-0402: marcadores (antes del PEP genérico, que descarta nodos ajenos).
+  if (handleBookmarksEvent(stanza, ctx)) return;
 
   // XEP-0163 PEP (telemetría, avatares, device list OMEMO).
   if (handlePubsubEvent(stanza)) return;
@@ -34,6 +41,9 @@ export async function routeStanza(stanza: Element, ctx: StanzaCtx): Promise<void
     await handleCarbon(stanza, ctx);
     return;
   }
+
+  // Invitaciones y asunto de sala (no son chat/groupchat con cuerpo).
+  if (handleMucMessage(stanza)) return;
 
   await handleChatMessage(stanza, ctx);
 }

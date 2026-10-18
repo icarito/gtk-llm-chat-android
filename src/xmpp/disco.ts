@@ -10,6 +10,7 @@ import {
   DISCO_INFO_NS,
 } from '@/xmpp/ns';
 import { capsNotifyFeatures } from '@/xmpp/pep/namespaces';
+import { NS_BOOKMARKS } from '@/xmpp/xep/bookmarks';
 import type { StanzaCtx } from '@/xmpp/session';
 
 /**
@@ -28,6 +29,8 @@ const CAPS_FEATURES = [
   // avisa cuando un contacto cambia su foto.
   `${AVATAR_METADATA_NODE}+notify`,
   CHAT_STATES_NS,
+  // XEP-0402: avisos de marcadores de salas (autojoin en vivo desde otro cliente).
+  `${NS_BOOKMARKS}+notify`,
 ];
 
 export function getActiveCapsFeatures(): string[] {
@@ -56,15 +59,13 @@ export function getActiveCapsFeatures(): string[] {
 // SUBIDA A MANO al añadir el +notify de avatares: el servidor cachea por
 // node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
 // los features nuevos no se anunciarían y no llegarían los avatares.
-// v4: + chatstates (XEP-0085).
-// v6: + hooks OpenClaw (activity/approval/progress) vía capsNotifyFeatures().
-// BUMP A v5 SI OMEMO ESTÁ ENABLED: Es intencional cambiar el hash de 'v4-telemetry-avatar-chatstates'
-// a 'v5-telemetry-avatar-chatstates-omemo' cuando OMEMO está habilitado para forzar al servidor y a
-// otros contactos conectados (incluido el componente OpenClaw) a invalidar su caché de nuestras
-// capacidades (disco#info XEP-0115). Esto asegura que re-consulten nuestras capabilities y detecten
-// correctamente nuestro soporte para eu.siacs.conversations.axolotl+notify de inmediato.
+// v4: + chatstates (XEP-0085). v8: + hooks OpenClaw (capsNotifyFeatures) + bookmarks+notify (XEP-0402).
+// Con OMEMO se usa otro ver para forzar a servidor/contactos (incl. OpenClaw) a re-consultar disco#info
+// (XEP-0115) y detectar eu.siacs.conversations.axolotl+notify de inmediato.
 export function capsVer(config: XmppAccountConfig): string {
-  return config.omemoEnabled ? 'v7-telemetry-hooks-avatar-chatstates-omemo' : 'v6-telemetry-hooks-avatar-chatstates';
+  return config.omemoEnabled
+    ? 'v9-telemetry-hooks-avatar-chatstates-bookmarks-omemo'
+    : 'v8-telemetry-hooks-avatar-chatstates-bookmarks';
 }
 
 /** Presencia inicial con caps. Sin ella el servidor no nos enruta mensajes entrantes. */

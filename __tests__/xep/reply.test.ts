@@ -17,6 +17,8 @@ describe('reply (XEP-0461 + fallback XEP-0428)', () => {
 
     const body = msg.getChildText('body') ?? '';
     expect(body).toBe(`> ${quoted}\nmi respuesta`);
+    // <quote> no es parte de XEP-0461: la cita viaja sólo en body + fallback.
+    expect(msg.getChild('reply', NS_REPLY)?.children).toHaveLength(0);
 
     const fallback = msg.getChild('fallback', NS_FALLBACK);
     expect(fallback?.attrs.for).toBe(NS_REPLY);

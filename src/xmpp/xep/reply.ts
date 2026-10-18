@@ -46,14 +46,9 @@ export function buildReply(
   };
   if (target.targetJid) replyAttrs.to = target.targetJid;
 
-  const replyChildren: Element[] = [];
-  if (target.quotedText) {
-    replyChildren.push(xml('quote', {}, target.quotedText));
-  }
-
   const children: Element[] = [
     xml('body', {}, fullBody),
-    xml('reply', replyAttrs, ...replyChildren),
+    xml('reply', replyAttrs),
   ];
 
   if (target.quotedText) {

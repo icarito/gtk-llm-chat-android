@@ -105,11 +105,14 @@ export function parseBookmarksItems(itemsEl: Element): Bookmark[] {
   const bookmarks: Bookmark[] = [];
 
   for (const node of itemsEl.children) {
+    // Nodos de texto (espacios entre elementos) no son <item>.
+    if (typeof node === 'string') continue;
     const conference =
       node.name === 'conference' ? node : node.getChild('conference');
     if (!conference) continue;
 
-    const jid = conference.attrs.jid;
+    // XEP-0402: la sala es el id del <item>; `jid` en <conference> sólo lo emite nuestro builder.
+    const jid = conference.attrs.jid ?? node.attrs.id;
     if (!jid) continue;
 
     const nick = conference.getChildText('nick');

@@ -35,9 +35,9 @@ contacts.subscribe(() => {
  * the presence handler drops all of it (it only updates known contacts)
  * and the server never resends, leaving every contact stuck offline.
  */
-export function fetchRosterThenAnnounce(ctx: StanzaCtx) {
+export function fetchRosterThenAnnounce(ctx: StanzaCtx): Promise<void> {
   connection.step('roster', 'active');
-  ctx.client.iqCaller.request(
+  return ctx.client.iqCaller.request(
     xml('iq', { type: 'get' }, xml('query', { xmlns: 'jabber:iq:roster' })),
     15000,
   ).then((result) => {
