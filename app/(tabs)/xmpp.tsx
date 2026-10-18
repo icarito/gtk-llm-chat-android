@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,8 +14,13 @@ import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { Colors } from '@/constants/theme';
-import { displayName, presenceColor, presenceLabel } from '@/xmpp/presence';
-import type { XmppContact, XmppMessage } from '@/types/xmpp';
+import { useUpdateBanner } from '@/update/updater';
+import { presenceColor, presenceLabel } from '@/xmpp/presence';
+import type { XmppMessage } from '@/types/xmpp';
+import { InviteCard } from '@/components/nav/InviteCard';
+import { useAgentJids } from '@/components/nav/hooks';
+import { ROSTER_FILTERS, buildRoster, filterRoster, previewText, type RosterFilter, type RosterItem } from '@/components/nav/rosterLogic';
+import { useRoomInvites, useRooms } from '@/xmpp/XmppContext';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,6 +37,37 @@ function latestMessage(a?: XmppMessage, b?: XmppMessage): XmppMessage | undefine
   if (!b) return a;
   return new Date(a.timestamp).getTime() >= new Date(b.timestamp).getTime() ? a : b;
 }
+
+const RosterRow = memo(function RosterRow({ item, avatar, last, onPress }: {
+  item: RosterItem;
+  avatar?: string;
+  last?: XmppMessage;
+  onPress: (jid: string) => void;
+}) {
+  const { contact, room } = item;
+  const subtitle = room
+    ? (room.subject || room.jid)
+    : (contact?.status || presenceLabel(contact?.presence ?? 'offline'));
+  return (
+    <TouchableOpacity style={styles.contactCard} onPress={() => onPress(item.jid)}>
+      <View style={styles.contactRow}>
+        <View style={styles.avatar}>
+          {contact && <View style={[styles.presenceIndicator, { backgroundColor: presenceColor(contact.presence) }]} />}
+          {avatar ? (
+            <Image source={{ uri: avatar }} style={styles.avatarImage} />
+          ) : (
+            <Ionicons name={room ? 'people' : item.kind === 'agent' ? 'hardware-chip' : 'person'} size={28} color={Colors.text} />
+          )}
+        </View>
+        <View style={styles.contactInfo}>
+          <Text style={styles.contactName} numberOfLines={1}>{room ? `#${item.name}` : item.name}</Text>
+          <Text style={styles.contactPresence} numberOfLines={1}>{subtitle}</Text>
+          {last && <Text style={styles.lastMessage} numberOfLines={1}>{previewText(last)}</Text>}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+});
 
 export default function XmppScreen() {
   const {
@@ -53,6 +89,7 @@ export default function XmppScreen() {
   const [cachedPreviews, setCachedPreviews] = useState<Map<string, XmppMessage>>(() => new Map());
   const [loadingPreviews, setLoadingPreviews] = useState(false);
   const router = useRouter();
+  const updateBanner = useUpdateBanner();
   const autoConnectAttempted = useRef(false);
   const contactJidsKey = useMemo(
     () => contacts.map((contact) => contact.jid).sort().join('\n'),
@@ -70,22 +107,17 @@ export default function XmppScreen() {
     [messages, cachedPreviews],
   );
 
-  // Roster por actividad reciente, como cualquier app de chat: la conversación
-  // que se acaba de mover va arriba. Los contactos sin historial quedan al
-  // final, por nombre, en vez de mezclarse entre las conversaciones vivas.
-  const sortedContacts = useMemo(() => {
-    const activityOf = (jid: string) => {
-      const msg = previewFor(jid);
-      if (!msg) return 0;
-      const ms = new Date(msg.timestamp).getTime();
-      return Number.isNaN(ms) ? 0 : ms;
-    };
-    return [...contacts].sort((a, b) => {
-      const diff = activityOf(b.jid) - activityOf(a.jid);
-      if (diff !== 0) return diff;
-      return displayName(a.jid, a.name).localeCompare(displayName(b.jid, b.name));
-    });
-  }, [contacts, previewFor]);
+  const rooms = useRooms();
+  const invites = useRoomInvites();
+  const agentJids = useAgentJids();
+  const [filter, setFilter] = useState<RosterFilter>('all');
+  const agentSet = useMemo(() => new Set(agentJids), [agentJids]);
+  // Roster por actividad reciente: la conversación que se acaba de mover va
+  // arriba; sin historial, al final y por nombre.
+  const roster = useMemo(
+    () => filterRoster(buildRoster(contacts, rooms, agentSet, previewFor), filter),
+    [contacts, rooms, agentSet, previewFor, filter],
+  );
 
   // Si el usuario terminó en el formulario con una cuenta ya guardada (logout
   // manual, o la sesión nunca llegó a autoconectar), no tiene sentido hacerlo
@@ -212,18 +244,21 @@ export default function XmppScreen() {
             </View>
           </View>
           <View style={styles.headerActions}>
-            <TouchableOpacity
-              onPress={() => router.push('/settings' as never)}
-              style={styles.disconnectBtn}
-              accessibilityLabel="Configuración"
-            >
-              <Ionicons name="settings-outline" size={21} color={Colors.text} />
-            </TouchableOpacity>
             <TouchableOpacity onPress={disconnect} style={styles.disconnectBtn} accessibilityLabel="Desconectar">
               <Ionicons name="power" size={20} color={Colors.error} />
             </TouchableOpacity>
           </View>
         </View>
+
+        {updateBanner.info && (
+          <TouchableOpacity style={styles.updateBanner} onPress={() => router.navigate('/yo' as never)} accessibilityRole="button">
+            <Ionicons name="download" size={16} color={Colors.background} />
+            <Text style={styles.updateBannerText}>Nueva versión v{updateBanner.info.version} disponible</Text>
+            <TouchableOpacity onPress={updateBanner.dismiss} hitSlop={10} accessibilityLabel="Descartar">
+              <Ionicons name="close" size={18} color={Colors.background} />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        )}
 
         {isReconnecting && (
           <View style={styles.reconnectBanner}>
@@ -232,57 +267,38 @@ export default function XmppScreen() {
           </View>
         )}
 
+        <View style={styles.chips}>
+          {ROSTER_FILTERS.map((f) => (
+            <TouchableOpacity
+              key={f.key}
+              onPress={() => setFilter(f.key)}
+              style={[styles.chip, filter === f.key && styles.chipActive]}
+              accessibilityState={{ selected: filter === f.key }}
+            >
+              <Text style={[styles.chipText, filter === f.key && styles.chipTextActive]}>{f.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         <FlatList
-          data={sortedContacts}
-          keyExtractor={(item) => item.jid}
+          data={roster}
+          keyExtractor={(item) => `${item.kind === 'room' ? 'r' : 'c'}:${item.jid}`}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={<>{invites.map((i) => <InviteCard key={i.id} invite={i} />)}</>}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Text style={styles.emptyText}>No hay contactos aún.</Text>
+              <Text style={styles.emptyText}>{filter === 'all' ? 'No hay conversaciones aún.' : 'Nada en esta categoría.'}</Text>
               <Text style={styles.emptySubtext}>Agrega contactos desde otro cliente XMPP.</Text>
             </View>
           }
-          renderItem={({ item }: { item: XmppContact }) => {
-            const lastMsg = previewFor(item.jid);
-            return (
-              <TouchableOpacity
-                style={styles.contactCard}
-                onPress={() => handleChatWith(item.jid)}
-              >
-                <View style={styles.contactRow}>
-                  <View style={styles.avatar}>
-                    <View style={[styles.presenceIndicator, { backgroundColor: presenceColor(item.presence) }]} />
-                    {avatars.get(item.jid) ? (
-                      <Image source={{ uri: avatars.get(item.jid)! }} style={styles.avatarImage} />
-                    ) : (
-                      <Ionicons name="person" size={28} color={Colors.text} />
-                    )}
-                  </View>
-                  <View style={styles.contactInfo}>
-                    <Text style={styles.contactName} numberOfLines={1}>
-                      {displayName(item.jid, item.name)}
-                    </Text>
-                    {/* Like the GTK roster: the contact's own status text when
-                        they set one, otherwise fall back to their presence. */}
-                    <Text style={styles.contactPresence} numberOfLines={1}>
-                      {item.status || presenceLabel(item.presence)}
-                    </Text>
-                    {lastMsg && (
-                      <Text style={styles.lastMessage} numberOfLines={1}>
-                        {lastMsg.direction === 'out' ? 'Tú: ' : ''}{lastMsg.body}
-                      </Text>
-                    )}
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleChatWith(item.jid)}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  >
-                    <Ionicons name="chatbubble" size={24} color={Colors.primary} />
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) => (
+            <RosterRow
+              item={item}
+              avatar={avatars.get(item.jid)}
+              last={previewFor(item.jid)}
+              onPress={handleChatWith}
+            />
+          )}
         />
       </View>
     );
@@ -419,6 +435,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
+  updateBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.primary, paddingHorizontal: 14, paddingVertical: 8 },
+  updateBannerText: { flex: 1, color: Colors.background, fontSize: 13, fontWeight: '600' },
   reconnectBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -484,6 +502,11 @@ const styles = StyleSheet.create({
     color: Colors.textDim,
     marginTop: 4,
   },
+  chips: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
+  chip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: Colors.surfaceBorder },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { color: Colors.muted, fontSize: 13 },
+  chipTextActive: { color: Colors.background, fontWeight: '700' },
   empty: {
     padding: 40,
     alignItems: 'center',

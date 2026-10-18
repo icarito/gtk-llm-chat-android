@@ -1,3 +1,7 @@
+> **Superado:** el nodo `approval-bypass` fue retirado; el código usa el
+> comando ad-hoc `elevated` (commit `60fc756`). Las tareas que mencionan
+> `setApprovalBypass`/`approval-bypass` quedan obsoletas.
+
 ## Why
 
 El cliente ya tenía un switch de "bypass approvals" en el panel de agente,

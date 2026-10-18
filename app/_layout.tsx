@@ -1,3 +1,4 @@
+import 'react-native-get-random-values'; // antes que node-polyfills/crypto (su getRandomValues usa Math.random)
 import '../node-polyfills/crypto';
 import '../node-polyfills/process';
 import { useEffect } from 'react';
@@ -16,6 +17,7 @@ import * as Notifications from 'expo-notifications';
 import * as QuickActions from 'expo-quick-actions';
 import { Ionicons } from '@expo/vector-icons';
 import * as SplashScreen from 'expo-splash-screen';
+import { maybeCheck, updatesSupported } from '@/update/updater';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -99,6 +101,15 @@ export default function RootLayout() {
       responseSub.remove();
       shortcutSub.remove();
     };
+  }, []);
+
+  // Chequeo de actualizaciones: unos segundos tras el arranque y luego al volver
+  // a primer plano (maybeCheck limita a 1 cada 12 h). Nunca descarga solo.
+  useEffect(() => {
+    if (!updatesSupported) return;
+    const t = setTimeout(maybeCheck, 5000);
+    const sub = AppState.addEventListener('change', (st) => { if (st === 'active') maybeCheck(); });
+    return () => { clearTimeout(t); sub.remove(); };
   }, []);
 
   if (!fontsSettled) return null;

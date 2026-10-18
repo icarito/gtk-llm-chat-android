@@ -1,9 +1,10 @@
-import { NativeModules } from 'react-native';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import * as SecureStore from 'expo-secure-store';
 
-const getXmppOmemoModule = () => NativeModules.XmppOmemoModule;
+// Módulo Expo local (modules/omemo-legacy); null en iOS/web -> modo mock.
+const getXmppOmemoModule = () => requireOptionalNativeModule('XmppOmemoModule');
 
 // XEP-0060 §7.1.5 publish-options form. Without this, the node is created
 // with whatever access model the server defaults to (Prosody's mod_pep
@@ -94,8 +95,9 @@ class OmemoService {
     return !!getXmppOmemoModule();
   }
 
+  /** Activado Y con módulo nativo (sólo Android): en iOS no hay OMEMO legacy y, sin esto, salas y adjuntos fallaban cerrado. */
   isEnabled(): boolean {
-    return this.omemoEnabled;
+    return this.omemoEnabled && this.isSupported();
   }
 
   getDeviceId(): number {

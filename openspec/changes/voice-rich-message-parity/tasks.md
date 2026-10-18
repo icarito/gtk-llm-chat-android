@@ -21,14 +21,14 @@
 
 ## 4. Markdown Tables
 
-- [x] 4.1 Integrate `react-native-markdown-display` into the message body while retaining custom copyable fenced-code rendering
+- [ ] 4.1 Integrate `react-native-markdown-display` into the message body while retaining custom copyable fenced-code rendering (divergente: ver modernize-single-client)
 - [x] 4.2 Add styled table rules with a horizontal `ScrollView`, bounded cells, header distinction, and accessible text
 - [x] 4.3 Add renderer tests for mixed prose/code/tables, malformed tables, wide tables, list re-renders, and XEP-0308 corrections
 
 ## 5. Clipboard and Paste
 
-- [x] 5.1 Add stable long-press message actions with Copy confirmation and preserve dedicated code-block copying
-- [x] 5.2 Add an explicit composer Paste action that inserts at the current selection/cursor
+- [ ] 5.1 Add stable long-press message actions with Copy confirmation and preserve dedicated code-block copying (divergente: ver modernize-single-client)
+- [ ] 5.2 Add an explicit composer Paste action that inserts at the current selection/cursor (divergente: ver modernize-single-client)
 - [x] 5.3 Define and test over-limit paste behavior so complete content is accepted or explicitly rejected, never silently truncated
 - [x] 5.4 Add accessibility labels and tests for copy, code-copy, paste, empty clipboard, and frequent list re-renders
 

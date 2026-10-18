@@ -6,7 +6,8 @@
  * the server-side MAM archive, never the source of truth.
  */
 import * as SQLite from 'expo-sqlite';
-import type { XmppInlineCommand, XmppQuickResponse } from '@/types/xmpp';
+import { foldReactions } from '@/xmpp/xep/reactions';
+import type { XmppInlineCommand, XmppMessage, XmppQuickResponse } from '@/types/xmpp';
 
 const DB_NAME = 'xmpp_history.db';
 
@@ -27,6 +28,11 @@ CREATE TABLE IF NOT EXISTS messages (
     attachment_local_path TEXT,
     attachment_state TEXT,
     was_encrypted INTEGER NOT NULL DEFAULT 0,
+    reactions TEXT,
+    reply_to TEXT,
+    retracted INTEGER NOT NULL DEFAULT 0,
+    muc_stanza_id TEXT,
+    sender_nick TEXT,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
@@ -54,6 +60,20 @@ export interface HistoryRow {
   attachment_local_path: string | null;
   attachment_state: string | null;
   was_encrypted: number;
+  reactions: Record<string, string[]> | null;
+  reply_to: NonNullable<XmppMessage['replyTo']> | null;
+  retracted: number;
+  muc_stanza_id: string | null;
+  sender_nick: string | null;
+}
+
+/** Metadatos de XEP-0444/0461/0424/0359 que acompañan a una fila nueva. */
+export interface HistoryExtra {
+  reactions?: Record<string, string[]> | null;
+  replyTo?: XmppMessage['replyTo'];
+  retracted?: boolean;
+  mucStanzaId?: string | null;
+  senderNick?: string | null;
 }
 
 export interface HistoryPreviewRow extends HistoryRow {
@@ -161,7 +181,40 @@ async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> 
   if (!names.has('notified')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN notified INTEGER NOT NULL DEFAULT 1');
   }
+  // Reacciones (XEP-0444), respuesta (XEP-0461), lápida (XEP-0424) y stanza-id/nick de MUC.
+  if (!names.has('reactions')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN reactions TEXT');
+  }
+  if (!names.has('reply_to')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN reply_to TEXT');
+  }
+  if (!names.has('retracted')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!names.has('muc_stanza_id')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN muc_stanza_id TEXT');
+  }
+  if (!names.has('sender_nick')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN sender_nick TEXT');
+  }
 }
+
+function decodeObject<T>(value: string | null | undefined): T | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as T : null;
+  } catch {
+    return null;
+  }
+}
+
+function encodeReactions(value: Record<string, string[]> | null | undefined): string | null {
+  return value && Object.keys(value).length > 0 ? JSON.stringify(value) : null;
+}
+
+/** Cláusula que identifica un mensaje por cualquiera de sus ids (cliente, stanza-id de sala o MAM). */
+const TARGET_CLAUSE = 'bare_jid = ? AND (stanza_id = ? OR muc_stanza_id = ? OR mam_id = ?)';
 
 function encodeMetadata(value: unknown[] | null | undefined): string | null {
   return value && value.length > 0 ? JSON.stringify(value) : null;
@@ -177,12 +230,24 @@ function decodeMetadata<T>(value: string | null | undefined): T[] {
   }
 }
 
-type DbHistoryRow = Omit<HistoryRow, 'quick_responses' | 'commands' | 'stanza_id' | 'oob_url'> & {
+type DbHistoryRow = Omit<
+  HistoryRow,
+  'quick_responses' | 'commands' | 'stanza_id' | 'oob_url' | 'reactions' | 'reply_to' | 'retracted'
+  | 'muc_stanza_id' | 'sender_nick'
+> & {
   quick_responses: string | null;
   commands: string | null;
   stanza_id?: string | null;
   oob_url?: string | null;
+  reactions?: string | null;
+  reply_to?: string | null;
+  retracted?: number | null;
+  muc_stanza_id?: string | null;
+  sender_nick?: string | null;
 };
+
+const ROW_COLUMNS = 'body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted, '
+  + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick';
 
 function decodeRow(row: DbHistoryRow): HistoryRow {
   return {
@@ -196,6 +261,11 @@ function decodeRow(row: DbHistoryRow): HistoryRow {
     attachment_local_path: row.attachment_local_path ?? null,
     attachment_state: row.attachment_state ?? null,
     was_encrypted: Number(row.was_encrypted ?? 0),
+    reactions: decodeObject<Record<string, string[]>>(row.reactions),
+    reply_to: decodeObject<NonNullable<XmppMessage['replyTo']>>(row.reply_to),
+    retracted: Number(row.retracted ?? 0),
+    muc_stanza_id: row.muc_stanza_id ?? null,
+    sender_nick: row.sender_nick ?? null,
   };
 }
 
@@ -240,13 +310,15 @@ export const XmppHistory = {
     attachmentLocalPath: string | null = null,
     attachmentState: string | null = null,
     wasEncrypted = false,
+    extra?: HistoryExtra,
   ): Promise<boolean> {
     const db = await getDb();
     const result = await db.runAsync(
       'INSERT OR IGNORE INTO messages '
         + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, '
-        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, was_encrypted, notified) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, was_encrypted, notified, '
+        + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -267,6 +339,11 @@ export const XmppHistory = {
         // reclama notificación por ello. En una base existente nace en 0 y
         // compite normalmente. Los salientes tampoco notifican.
         isFreshInstallWindowActive() || direction === 'out' ? 1 : 0,
+        encodeReactions(extra?.reactions),
+        extra?.replyTo ? JSON.stringify(extra.replyTo) : null,
+        extra?.retracted ? 1 : 0,
+        extra?.mucStanzaId ?? null,
+        extra?.senderNick ?? null,
       ],
     );
     if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
@@ -347,8 +424,8 @@ export const XmppHistory = {
   async getRecent(bareJid: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM messages '
+      `SELECT ${ROW_COLUMNS} FROM (`
+        + `SELECT ${ROW_COLUMNS} FROM messages `
         + 'WHERE bare_jid = ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, limit],
@@ -360,8 +437,8 @@ export const XmppHistory = {
   async getBefore(bareJid: string, beforeTimestamp: string, limit = 50): Promise<HistoryRow[]> {
     const db = await getDb();
     const rows = await db.getAllAsync<DbHistoryRow>(
-      'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM ('
-        + 'SELECT body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted FROM messages '
+      `SELECT ${ROW_COLUMNS} FROM (`
+        + `SELECT ${ROW_COLUMNS} FROM messages `
         + 'WHERE bare_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?'
         + ') ORDER BY timestamp ASC',
       [bareJid, beforeTimestamp, limit],
@@ -522,6 +599,55 @@ export const XmppHistory = {
       [bareJid, 'out', timestamp, ...candidates],
     );
     return Boolean(row);
+  },
+
+  /** Aplica el conjunto de reacciones de `sender` al mensaje `targetId` (cualquiera de sus ids). */
+  async updateReactions(
+    bareJid: string,
+    targetId: string,
+    sender: string,
+    emojis: string[],
+  ): Promise<boolean> {
+    const db = await getDb();
+    const args = [bareJid, targetId, targetId, targetId];
+    const row = await db.getFirstAsync<{ reactions: string | null }>(
+      `SELECT reactions FROM messages WHERE ${TARGET_CLAUSE} LIMIT 1`,
+      args,
+    );
+    if (!row) return false;
+    const next = foldReactions(decodeObject<Record<string, string[]>>(row.reactions) ?? undefined, sender, emojis);
+    await db.runAsync(
+      `UPDATE messages SET reactions = ? WHERE ${TARGET_CLAUSE}`,
+      [encodeReactions(next), ...args],
+    );
+    return true;
+  },
+
+  /**
+   * Lápida XEP-0424: el body se conserva, la fila queda marcada. Sólo el autor
+   * puede retractar: `author` filtra por dirección (chat) o nick (groupchat).
+   */
+  async markRetracted(
+    bareJid: string,
+    targetId: string,
+    author: { direction?: Direction; nick?: string },
+  ): Promise<boolean> {
+    const db = await getDb();
+    const result = await db.runAsync(
+      `UPDATE messages SET retracted = 1 WHERE ${TARGET_CLAUSE} AND `
+        + (author.nick ? 'sender_nick = ?' : 'direction = ?'),
+      [bareJid, targetId, targetId, targetId, author.nick ?? author.direction ?? 'in'],
+    );
+    return result.changes > 0;
+  },
+
+  /** Guarda el stanza-id que la sala asignó a un mensaje nuestro (llega en el eco). */
+  async setMucStanzaId(bareJid: string, clientId: string, mucStanzaId: string): Promise<void> {
+    const db = await getDb();
+    await db.runAsync(
+      'UPDATE messages SET muc_stanza_id = ? WHERE bare_jid = ? AND stanza_id = ?',
+      [mucStanzaId, bareJid, clientId],
+    );
   },
 
   async clear(bareJid?: string): Promise<void> {

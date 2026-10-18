@@ -8,10 +8,16 @@ OpenClaw; no hay backend propio.
 
 ```
 app/                       → Expo Router (rutas por fichero)
-  (tabs)/xmpp.tsx          → Roster: contactos, presencia, avatares
-  xmpp-chat/[jid].tsx      → Pantalla de chat
+  (tabs)/                  → Inicio (roster+filtros+invitaciones) · Flota · Salas · Yo
+  xmpp-chat/[jid].tsx      → Pantalla de chat (composición; la UI vive en src/chat/)
+  room/[jid].tsx           → Ocupantes y moderación de una sala
+  encryption/[jid].tsx     → Dispositivos OMEMO 2, huellas y confianza
   _layout.tsx              → Layout raíz: fuentes, notificaciones, ruteo de push
 src/
+  chat/                    → UI de chat sobre @kesha-antonov/react-native-chat
+                             (adaptador toIMessage, ChatPane, autocompletado)
+  components/              → agent/ (aprobaciones, mind panel), nav/, encryption/
+  omemo2/                  → Núcleo OMEMO 2 puro (X3DH, Double Ratchet, XEP-0454)
   xmpp/
     XmppService.ts         → Conexión única, viva todo el ciclo de la app.
                              Los componentes se suscriben; nunca son dueños de
@@ -26,25 +32,40 @@ src/
     xep-0050.ts            → Comandos ad-hoc
     xep-0308.ts            → Corrección de mensajes
   constants/               → Tema oscuro
-android/
-  app/src/main/java/…      → Módulo nativo: foreground service del XMPP.
-                             SE VERSIONA (ver más abajo).
+modules/                   → Módulos Expo locales (Kotlin): xmpp-foreground
+                             (foreground service) y omemo-legacy (OMEMO/Signal).
+plugins/                   → Config plugins propios (network security config)
 ```
+
+## OMEMO 2
+
+`src/omemo2/` es el núcleo puro (sin XMPP); `src/xmpp/omemo2.ts` lo cablea
+(PEP, stanzas, BTBV; contratos en su cabecera). La entrada de la app es
+`index.js`: `react-native-get-random-values` debe evaluarse ANTES que @noble,
+o `node-polyfills/crypto` instala un `getRandomValues` basado en Math.random.
 
 ## Stack
 
-- Expo SDK 52 + Expo Router v4
+- Expo SDK 57 (RN 0.86, React 19, New Architecture) + Expo Router v57
 - TypeScript en modo estricto (`any` prohibido)
 - Tema oscuro (`#0A0E14`)
 - `@xmpp/client` sobre WebSocket
 
 ## Trampas que ya nos han mordido
 
-- **`android/` se versiona.** Este proyecto tiene código nativo propio, así que
-  no se regenera entero desde `app.json`. El `.gitignore` sólo excluye lo que
-  produce el build.
-- **Los iconos salen de `app.json`**, no de editar `android/app/src/main/res/`
-  a mano: un `prebuild` regenera ese directorio. El arte de `assets/` ya lleva
+- **`<Chat>` de react-native-chat reenvía TODAS sus props a cada fila de la
+  lista**, que se memoiza por referencia. Cualquier prop que cambie en cada
+  render (un objeto literal, un callback no memoizado, el texto del
+  composer) re-renderiza todas las filas. Las props van como constantes de
+  módulo o memoizadas. El texto del composer vive en el store de
+  assistant-ui (`Composer.tsx`, `renderInputToolbar` estable), no en el estado
+  de `ChatPane`; nunca pases `text`/`textInputProps` cambiantes a `<Chat>`.
+
+- **`android/` e `ios/` NO se versionan (CNG).** Se regeneran con
+  `npx expo prebuild --clean --no-install`. Nunca los edites a mano: el cambio
+  se pierde. Las personalizaciones nativas van en `app.json`/`app.config.js`,
+  `plugins/` o `modules/`. Inventario y flujo en `docs/native-cng.md`.
+- **Los iconos salen de `app.json`.** El arte de `assets/` ya lleva
   su margen (Android sólo garantiza el 66% central del adaptive icon).
 - **El `ver` de las caps XEP-0115 no es un SHA-1 real** (no hay SHA-1 en el
   bundle de RN): es un identificador opaco. Si cambias `CAPS_FEATURES`, **súbelo

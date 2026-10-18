@@ -1,6 +1,8 @@
-import { AppState, NativeModules } from 'react-native';
+import { AppState } from 'react-native';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
-const { XmppServiceModule } = NativeModules;
+// Módulo Expo local (modules/xmpp-foreground).
+const XmppServiceModule = requireOptionalNativeModule('XmppServiceModule');
 
 /**
  * Android 12+ (API 31) prohíbe startForegroundService() desde background: lanza

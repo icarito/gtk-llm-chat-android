@@ -39,11 +39,25 @@ export interface XmppMessage {
   threadId?: string | null;
   quickResponses?: XmppQuickResponse[];
   commands?: XmppInlineCommand[];
+  /** XEP-0461. `text` = cita (del fallback XEP-0428), `sender` = autor citado,
+   *  `id` = id del mensaje citado (en groupchat, su stanza-id), `jid` = el `to` crudo. */
   replyTo?: {
     text: string;
     sender: string;
+    id?: string;
+    jid?: string;
   } | null;
+  /** XEP-0359: id que el MUC asignó al mensaje; es el objetivo de reacciones/retractaciones en groupchat. */
+  stanzaId?: string | null;
+  /** Groupchat: nick del ocupante que lo envió (`from` es el bare de la sala). */
+  senderNick?: string;
+  /** XEP-0444 agregadas: emoji -> remitentes (bare JID en chat; `sala/nick` en groupchat). */
+  reactions?: Record<string, string[]>;
+  /** XEP-0424: el autor lo retractó. Se conserva como lápida (el body queda). */
+  retracted?: boolean;
   oobUrl?: string | null;
+  /** XEP-0454: file:// cacheado del adjunto aesgcm ya descifrado. */
+  localUri?: string | null;
   attachmentDuration?: number | null;
   attachmentMimeType?: string | null;
   /** Epoch ms de la última corrección XEP-0308 aplicada — mientras sea
@@ -53,10 +67,62 @@ export interface XmppMessage {
    *  lanzó — la UI ofrece reintentar. */
   sendState?: 'pending' | 'sent' | 'failed';
   wasEncrypted?: boolean;
-  /** Derived from the actual stanza, never from the account setting. */
-  encryptionStatus?: 'encrypted' | 'undecryptable';
+  /** Derived from the actual stanza, never from the account setting.
+   *  'encrypted' = fila del historial sin protocolo conocido (sólo guardamos un booleano). */
+  encryptionStatus?: 'omemo2' | 'omemo' | 'none' | 'undecryptable' | 'encrypted';
   /** XEP-0308 target when this archived stanza corrects an earlier message. */
   replaceId?: string | null;
+  /** Sólo MAM: esta stanza archivada retracta (XEP-0424) el mensaje `retractId`; no es una burbuja. */
+  retractId?: string | null;
+  /** Sólo MAM: esta stanza archivada es un evento de reacciones (XEP-0444), no una burbuja. */
+  reactionEvent?: { targetId: string; emojis: string[]; sender: string } | null;
+}
+
+export type RoomState = 'joining' | 'joined' | 'left' | 'kicked' | 'banned' | 'error';
+
+export interface RoomOccupant {
+  nick: string;
+  realJid?: string;
+  role: string;
+  affiliation: string;
+  isAgent: boolean;
+}
+
+export interface XmppRoom {
+  jid: string;
+  name?: string;
+  subject?: string;
+  nick: string;
+  state: RoomState;
+  /** Condición de error (p. ej. `conflict`, `not-authorized`) si state === 'error'. */
+  error?: string;
+  bookmarked: boolean;
+  /** Valor del marcador XEP-0402 (sólo con `bookmarked`). */
+  autojoin?: boolean;
+  occupants: Record<string, RoomOccupant>;
+  /** Nuestro rol/afiliación, tomados de la presencia propia (110). */
+  role: string;
+  affiliation: string;
+  /** disco#info de la sala (XEP-0045 muc_nonanonymous / muc_membersonly); undefined hasta consultarla. */
+  nonAnonymous?: boolean;
+  membersOnly?: boolean;
+  /** Por qué no hay OMEMO 2 en la sala (para la UI); sólo con nonAnonymous === false. */
+  omemoUnavailableReason?: string;
+  /** Destinatarios que quedaron sin clave en el último envío cifrado. */
+  omemoSkipped?: number;
+}
+
+/** Invitación a sala pendiente de aceptar/rechazar (mediada XEP-0045 o directa XEP-0249). */
+export interface XmppRoomInvite {
+  id: string;
+  room: string;
+  roomName: string;
+  from: string;
+  fromName: string;
+  reason?: string;
+  password?: string;
+  mediated: boolean;
+  timestamp: string;
 }
 
 /** Button color hint (paridad con Telegram / GTK). */

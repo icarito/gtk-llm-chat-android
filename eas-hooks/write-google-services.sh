@@ -6,4 +6,4 @@ if [ -z "${GOOGLE_SERVICES_JSON:-}" ]; then
   exit 0
 fi
 
-cp "$GOOGLE_SERVICES_JSON" android/app/google-services.json
+cp "$GOOGLE_SERVICES_JSON" google-services.json

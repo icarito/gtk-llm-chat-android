@@ -1,4 +1,3 @@
-import { NativeModules } from 'react-native';
 import { xml } from '@xmpp/client';
 
 // 1. Mock Android Keystore-backed persistence
@@ -44,7 +43,11 @@ const mockNativeModule = {
   aesGcmDecrypt: jest.fn().mockResolvedValue('Hello OMEMO!'),
 };
 
-NativeModules.XmppOmemoModule = mockNativeModule;
+jest.mock('expo-modules-core', () => ({
+  ...jest.requireActual('expo-modules-core'),
+  requireOptionalNativeModule: (name: string) =>
+    name === 'XmppOmemoModule' ? mockNativeModule : null,
+}));
 
 import { Omemo } from '../src/xmpp/xep-0384';
 
@@ -190,8 +193,8 @@ describe('OMEMO XEP-0384 Encryption & Decryption', () => {
   it('generates unique random cryptographic key and IV for consecutive encryptions', async () => {
     await Omemo.init('test@fuentelibre.org', mockXmppClient, true);
 
-    const enc1 = await NativeModules.XmppOmemoModule.aesGcmEncrypt('Hello');
-    const enc2 = await NativeModules.XmppOmemoModule.aesGcmEncrypt('Hello');
+    const enc1 = await mockNativeModule.aesGcmEncrypt('Hello');
+    const enc2 = await mockNativeModule.aesGcmEncrypt('Hello');
 
     expect(enc1.key).not.toBe(enc2.key);
     expect(enc1.iv).not.toBe(enc2.iv);

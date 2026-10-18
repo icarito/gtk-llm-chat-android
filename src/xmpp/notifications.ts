@@ -53,21 +53,32 @@ async function resolveExpoPushToken(): Promise<string | null> {
   return token;
 }
 
+/**
+ * Con la app en primer plano el cliente ya notifica en local cada mensaje (con
+ * sus filtros de chat abierto, replay y dedupe). El push remoto XEP-0357 que
+ * el servidor manda en paralelo duplicaría el aviso, así que se silencia; en
+ * segundo plano/cerrada el SO lo muestra sin pasar por aquí.
+ */
+export async function handleIncomingNotification(
+  notification: Notifications.Notification,
+): Promise<Notifications.NotificationBehavior> {
+  const remote = (notification.request.trigger as { type?: string } | null)?.type === 'push';
+  const show = !(remote && isForeground);
+  return {
+    shouldShowAlert: show,
+    shouldPlaySound: show,
+    shouldSetBadge: show,
+    shouldShowBanner: show,
+    shouldShowList: show,
+  };
+}
+
 // Configure notification channels, permissions, and push token when available.
 export async function setupNotifications(): Promise<NotificationSetupResult> {
   PushStatus.update({ token: 'requesting', error: null });
   pushLog.warn('[xmpp-push] Notification setup started');
   await ensureNotificationChannels();
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowBubble: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
-  });
+  Notifications.setNotificationHandler({ handleNotification: handleIncomingNotification });
 
   const granted = await requestNotificationPermission();
   if (!granted) {
@@ -105,6 +116,22 @@ function bareJid(full: string): string {
 // Called from AppState listener
 export function setAppForeground(foreground: boolean) {
   isForeground = foreground;
+  if (foreground) dismissPushNotifications().catch(() => {});
+}
+
+/**
+ * Los push XEP-0357 los pinta el SO con un tag propio ("Tienes N mensajes
+ * nuevos") y no traen `data.jid`, así que dismissNotificationForJid no los
+ * alcanza y se apilaban. Al volver a primer plano la app ya muestra todo: se
+ * retiran.
+ */
+export async function dismissPushNotifications(): Promise<void> {
+  const presented = await Notifications.getPresentedNotificationsAsync();
+  await Promise.all(
+    presented
+      .filter((n) => (n.request.trigger as { type?: string } | null)?.type === 'push')
+      .map((n) => Notifications.dismissNotificationAsync(n.request.identifier)),
+  );
 }
 
 /**
@@ -272,7 +299,7 @@ export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) 
         identifier: `approval-${index}`,
         buttonTitle: 'node' in action ? action.name : action.label,
         options: {
-          opensAppToForeground: false,
+          opensAppToForeground: true,
           ...((('style' in action) && action.style === 'danger')
             ? { isDestructive: true }
             : {}),
