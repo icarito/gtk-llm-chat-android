@@ -1,7 +1,9 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import React from 'react';
 import { AppState } from 'react-native';
 import { XmppService } from '@/xmpp/XmppService';
+import { connection } from '@/xmpp/session';
+import { contacts as contactsStore, messages as messagesStore, pendingActions as pendingStore } from '@/xmpp/store';
 import { PushStatus, type XmppPushStatus } from '@/xmpp/pushStatus';
 import { useXmppAccount } from '@/hooks/useXmppAccount';
 import type { XmppContact, XmppConnectionState, XmppMessage, XmppPendingAction } from '@/types/xmpp';
@@ -30,27 +32,14 @@ const XmppContext = createContext<XmppContextValue | null>(null);
 export function XmppProvider({ children }: { children: React.ReactNode }) {
   const { account, loading, saveAccount } = useXmppAccount();
   const appState = useRef(AppState.currentState);
-  const [state, setState] = useState<XmppConnectionState>(() => XmppService.getState());
-  const [contacts, setContacts] = useState<XmppContact[]>(() => XmppService.getContacts());
-  const [messages, setMessages] = useState<Map<string, XmppMessage[]>>(() => XmppService.getMessages());
-  const [pendingActions, setPendingActions] = useState<XmppPendingAction[]>(() => XmppService.getPendingActions());
+  // Snapshots estables del store (ver store.ts): sólo re-renderiza lo que cambió.
+  const state = useSyncExternalStore(connection.subscribe.bind(connection), () => connection.legacyState());
+  const contacts = useSyncExternalStore(contactsStore.subscribe, contactsStore.getAll);
+  const messages = useSyncExternalStore(messagesStore.subscribeAll, messagesStore.getAll);
+  const pendingActions = useSyncExternalStore(pendingStore.subscribe.bind(pendingStore), () => pendingStore.getAll());
   const [pushStatus, setPushStatus] = useState<XmppPushStatus>(() => PushStatus.get());
 
-  // Subscribe to XmppService singleton
-  useEffect(() => {
-    const unsubState = XmppService.onStateChange(setState);
-    const unsubContacts = XmppService.onContactsChange(setContacts);
-    const unsubMessages = XmppService.onMessagesChange(setMessages);
-    const unsubPendingActions = XmppService.onPendingActionsChange(setPendingActions);
-    const unsubPushStatus = PushStatus.subscribe(setPushStatus);
-    return () => {
-      unsubState();
-      unsubContacts();
-      unsubMessages();
-      unsubPendingActions();
-      unsubPushStatus();
-    };
-  }, []);
+  useEffect(() => PushStatus.subscribe(setPushStatus), []);
 
   useEffect(() => {
     if (!account || loading) return undefined;
@@ -155,4 +144,15 @@ export function useXmpp(): XmppContextValue {
     throw new Error('useXmpp must be used within XmppProvider');
   }
   return ctx;
+}
+
+/**
+ * Mensajes en vivo de UNA conversación. Sólo re-renderiza cuando esa
+ * conversación cambia (una corrección en otro chat no la toca).
+ */
+export function useConversation(jid: string): readonly XmppMessage[] {
+  return useSyncExternalStore(
+    useCallback((cb: () => void) => messagesStore.subscribe(jid, cb), [jid]),
+    () => messagesStore.getConversation(jid),
+  );
 }

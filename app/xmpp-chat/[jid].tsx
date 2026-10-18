@@ -23,7 +23,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
-import { useXmpp } from '@/xmpp/XmppContext';
+import { useConversation, useXmpp } from '@/xmpp/XmppContext';
 import { XmppService, findDenyAction, pendingGroupLooksLikeApproval } from '@/xmpp/XmppService';
 import { setActiveChatJid, dismissNotificationForJid } from '@/xmpp/notifications';
 import { displayName, presenceColor } from '@/xmpp/presence';
@@ -375,7 +375,7 @@ function runWhenIdle(task: () => void): () => void {
  * direction, within a short window — mirroring attach_mam_to_recent_message in
  * the GTK client.
  */
-function mergeMessages(...lists: XmppMessage[][]): XmppMessage[] {
+function mergeMessages(...lists: (readonly XmppMessage[])[]): XmppMessage[] {
   const merged: XmppMessage[] = [];
   const seenIds = new Set<string>();
 
@@ -543,7 +543,6 @@ export default function XmppChatScreen() {
   const decodedJid = decodeURIComponent(jid || '');
   const {
     state,
-    messages,
     pendingActions,
     pushStatus,
     contacts,
@@ -554,6 +553,7 @@ export default function XmppChatScreen() {
     connect,
     isConfigured,
   } = useXmpp();
+  const liveMsgs = useConversation(decodedJid);
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<XmppMessage[]>([]);
   const [rehydrating, setRehydrating] = useState(false);
@@ -717,10 +717,6 @@ export default function XmppChatScreen() {
 
   // Live messages arrive through the service's map; history comes from cache +
   // MAM. Both are deduped against each other on body+timestamp.
-  const liveMsgs = useMemo(
-    () => messages.get(decodedJid) || [],
-    [decodedJid, messages],
-  );
   const sortedMsgs = mergeMessages(history, liveMsgs, toolBubbles)
     .filter((message) => approvalTransportNotice(message.body) === null);
   const msgCount = sortedMsgs.length;
