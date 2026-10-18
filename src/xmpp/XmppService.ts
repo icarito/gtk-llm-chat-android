@@ -4,7 +4,7 @@
  * React components subscribe via listeners, never own the connection.
  */
 import { client, xml } from '@xmpp/client';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import type { Client, Element } from '@xmpp/xml';
 import type {
   DataForm,
