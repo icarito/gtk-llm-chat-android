@@ -275,9 +275,10 @@ jobs:
           WS=$(ls -d ios/*.xcworkspace | head -n 1)
           test -n "$WS" || { echo "::error::No se encontro ios/*.xcworkspace"; exit 1; }
           WS_NAME=$(basename "$WS" .xcworkspace)
-          SCHEME=$(xcodebuild -list -workspace "$WS" -json 2>/dev/null \
-            | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("workspace") or {}).get("schemes", [""])[0])' || true)
-          SCHEME="${SCHEME:-$WS_NAME}"
+          # Prebuild nombra el scheme de la app igual que el workspace. NO usar
+          # schemes[0] de `xcodebuild -list`: viene ordenado y el primero es un
+          # pod (EXApplication), que archiva una librería sin método de export.
+          SCHEME="$WS_NAME"
           echo "workspace=$WS scheme=$SCHEME"
 
           ARCHIVE="$RUNNER_TEMP/build/${WS_NAME}.xcarchive"
