@@ -163,3 +163,19 @@ describe('SessionManager', () => {
     expect(await B.ensurePreKeys(5)).toBe(false);
   });
 });
+
+describe('auditoría', () => {
+  it('rechaza kex con identity key inesperada sin tocar el estado', async () => {
+    const bob = await SessionManager.load(new MemoryStore(), 5);
+    const eve = await SessionManager.load(new MemoryStore(), 5);
+    const bobDev = { jid: 'bob@x', rid: bob.deviceId };
+    await eve.createSessionFromBundle(bobDev, bob.bundle());
+    const out = await eve.encryptForDevices([bobDev], new TextEncoder().encode('evil'));
+    const k = out.keys[0];
+    const alice = await SessionManager.load(new MemoryStore(), 5);
+    await expect(
+      bob.decryptFromDevice({ jid: 'alice@x', rid: 1 }, { kex: k.kex, data: k.data }, out.payload, alice.identityPub),
+    ).rejects.toThrow('identity key');
+    expect(bob.bundle().prekeys.length).toBe(5);
+  });
+});

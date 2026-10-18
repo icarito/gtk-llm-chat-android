@@ -1,7 +1,7 @@
 // Gestor de sesiones OMEMO 2: dispositivo propio (identidad, signed prekeys,
 // prekeys), sesiones por (jid, device id) y cifrado/descifrado de mensajes.
 // Sin XMPP: trabaja con bytes y modelos; el cableado PEP/stanza va aparte.
-import { bytesToHex, hexToBytes, randomBytes } from './bytes';
+import { bytesToHex, ctEqual, hexToBytes, randomBytes } from './bytes';
 import { DoubleRatchet } from './doubleRatchet';
 import { fingerprint, generateIdentity, identityFromSeed } from './identity';
 import { decodeKeyExchange, encodeKeyExchange } from './messages';
@@ -186,6 +186,7 @@ export class SessionManager {
     dev: DeviceRef,
     key: { kex: boolean; data: Uint8Array },
     payload?: Uint8Array,
+    expectedIk?: Uint8Array,
   ): Promise<{ plaintext: Uint8Array | null; peerIk: Uint8Array }> {
     return this.locked(async () => {
       let rec = await this.loadSession(dev);
@@ -200,6 +201,11 @@ export class SessionManager {
           keyMaterial = dr.decrypt(kex.message);
           rec.dr = dr.toJSON();
         } else {
+          // Un kex nuevo no puede cambiar la identidad del par en silencio:
+          // se compara con la esperada (bundle/devicelist) o la ya conocida,
+          // antes de consumir prekeys o reemplazar la sesión.
+          const known = expectedIk ?? (rec ? hexToBytes(rec.peerIk) : undefined);
+          if (known && !ctEqual(known, kex.ik)) throw new Error('omemo2: identity key del par cambió');
           const d = this.dev;
           const spk =
             kex.spkId === d.spk.id ? d.spk : d.oldSpks.find((s) => s.id === kex.spkId);

@@ -100,9 +100,14 @@ export class DoubleRatchet {
       if (!ctEqual(want, auth.mac)) throw new Error('omemo2: MAC inválido');
       return cbc(k.enc, k.iv).decrypt(msg.ciphertext);
     };
-    const skipTo = (until: number) => {
+    // strict=false al cerrar la cadena anterior (pn): como la referencia, no se
+    // bloquea el ratchet; se descartan las claves que exceden MAX_SKIP.
+    const skipTo = (until: number, strict = true) => {
       if (!s.recvCk) return;
-      if (until - s.recvN > MAX_SKIP) throw new Error('omemo2: demasiados mensajes salteados');
+      if (until - s.recvN > MAX_SKIP) {
+        if (strict) throw new Error('omemo2: demasiados mensajes salteados');
+        return;
+      }
       while (s.recvN < until) {
         const step = chainStep(s.recvCk);
         s.skipped.push({ pub: bytesToHex(s.otherPub!), n: s.recvN, mk: bytesToHex(step.mk) });
@@ -119,7 +124,7 @@ export class DoubleRatchet {
       s.skipped.splice(idx, 1);
     } else {
       if (!s.otherPub || !ctEqual(s.otherPub, msg.dhPub)) {
-        skipTo(msg.pn); // cierra la cadena anterior
+        skipTo(msg.pn, false); // cierra la cadena anterior
         s.otherPub = msg.dhPub;
         const r1 = rootStep(s.root, x25519.getSharedSecret(s.ownPriv, msg.dhPub));
         s.recvCk = r1.ck;
