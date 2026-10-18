@@ -31,6 +31,13 @@ modules/                   → Módulos Expo locales (Kotlin): xmpp-foreground
 plugins/                   → Config plugins propios (network security config)
 ```
 
+## OMEMO 2
+
+`src/omemo2/` es el núcleo puro (sin XMPP); `src/xmpp/omemo2.ts` lo cablea
+(PEP, stanzas, BTBV; contratos en su cabecera). La entrada de la app es
+`index.js`: `react-native-get-random-values` debe evaluarse ANTES que @noble,
+o `node-polyfills/crypto` instala un `getRandomValues` basado en Math.random.
+
 ## Stack
 
 - Expo SDK 57 (RN 0.86, React 19, New Architecture) + Expo Router v57

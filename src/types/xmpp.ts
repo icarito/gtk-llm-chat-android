@@ -65,8 +65,9 @@ export interface XmppMessage {
    *  lanzó — la UI ofrece reintentar. */
   sendState?: 'pending' | 'sent' | 'failed';
   wasEncrypted?: boolean;
-  /** Derived from the actual stanza, never from the account setting. */
-  encryptionStatus?: 'encrypted' | 'undecryptable';
+  /** Derived from the actual stanza, never from the account setting.
+   *  'encrypted' = fila del historial sin protocolo conocido (sólo guardamos un booleano). */
+  encryptionStatus?: 'omemo2' | 'omemo' | 'none' | 'undecryptable' | 'encrypted';
   /** XEP-0308 target when this archived stanza corrects an earlier message. */
   replaceId?: string | null;
   /** Sólo MAM: esta stanza archivada retracta (XEP-0424) el mensaje `retractId`; no es una burbuja. */

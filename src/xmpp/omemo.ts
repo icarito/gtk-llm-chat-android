@@ -2,6 +2,7 @@
 import type { Client } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import { connection } from '@/xmpp/session';
+import { startOmemo2 } from '@/xmpp/omemo2';
 
 const OMEMO_PUBLISH_RETRY_BASE_MS = 5000;
 const OMEMO_PUBLISH_RETRY_MAX_ATTEMPTS = 6; // ~5s..80s, luego se abandona hasta la próxima conexión
@@ -41,8 +42,23 @@ async function publishOwnOmemoIdentityWithRetry(attempt = 0): Promise<void> {
   }
 }
 
+/** Igual que la identidad legacy: publica bundle + device list OMEMO 2, con reintento acotado. */
+async function startOmemo2WithRetry(jid: string, attempt = 0): Promise<void> {
+  try {
+    await startOmemo2(jid);
+  } catch (err) {
+    if (attempt >= 3 || !connection.isUsable()) {
+      console.error('[OMEMO2] Failed to publish own identity, giving up until next reconnect', err);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, OMEMO_PUBLISH_RETRY_BASE_MS * 2 ** attempt));
+    if (connection.isUsable()) await startOmemo2WithRetry(jid, attempt + 1);
+  }
+}
+
 export function initOmemoOnOnline(jid: string, client: Client, enabled: boolean) {
   if (enabled) {
+    void startOmemo2WithRetry(jid);
     Omemo.init(jid, client, true)
       .then(async () => {
         await publishOwnOmemoIdentityWithRetry();

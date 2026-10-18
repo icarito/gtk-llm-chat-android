@@ -77,6 +77,7 @@ import {
   submitRoomConfig,
 } from '@/xmpp/moderation';
 import { initOmemoOnOnline } from '@/xmpp/omemo';
+import { omemo2Api } from '@/xmpp/omemo2';
 import {
   avatarListeners,
   fetchAgentTelemetry,
@@ -560,6 +561,10 @@ export const XmppService = {
   // ── Reacciones (XEP-0444) y retractación (XEP-0424) ──
   react,
   retractMessage,
+
+  // ── OMEMO 2 ──
+  /** `ownFingerprint`, `devices(jid)`, `setTrust`, `isEnabledFor`/`setEnabledFor`, `refresh`, `subscribe`, `onIdentityChanged`. */
+  omemo2: omemo2Api,
 
   // ── Salas (MUC) ──
   /** Estado observable de salas: `get(jid)`, `getAll()`, `subscribe(cb)`. */

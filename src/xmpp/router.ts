@@ -8,6 +8,7 @@ import { handleDiscoInfoGet } from '@/xmpp/disco';
 import { handlePresence } from '@/xmpp/roster';
 import { handleBookmarksEvent, handleMucMessage, handleMucPresence } from '@/xmpp/rooms';
 import { handlePubsubEvent } from '@/xmpp/pep';
+import { handleOmemo2Event } from '@/xmpp/omemo2';
 import { handleMamResult, isMamResult } from '@/xmpp/mam';
 import { handleCarbon, handleChatMessage, isCarbon } from '@/xmpp/inbound';
 
@@ -25,6 +26,9 @@ export async function routeStanza(stanza: Element, ctx: StanzaCtx): Promise<void
 
   // XEP-0402: marcadores (antes del PEP genérico, que descarta nodos ajenos).
   if (handleBookmarksEvent(stanza, ctx)) return;
+
+  // XEP-0384 v0.8: device list OMEMO 2 (antes del PEP genérico, que descarta nodos ajenos).
+  if (handleOmemo2Event(stanza)) return;
 
   // XEP-0163 PEP (telemetría, avatares, device list OMEMO).
   if (handlePubsubEvent(stanza)) return;
