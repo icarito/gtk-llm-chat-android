@@ -116,6 +116,22 @@ function bareJid(full: string): string {
 // Called from AppState listener
 export function setAppForeground(foreground: boolean) {
   isForeground = foreground;
+  if (foreground) dismissPushNotifications().catch(() => {});
+}
+
+/**
+ * Los push XEP-0357 los pinta el SO con un tag propio ("Tienes N mensajes
+ * nuevos") y no traen `data.jid`, así que dismissNotificationForJid no los
+ * alcanza y se apilaban. Al volver a primer plano la app ya muestra todo: se
+ * retiran.
+ */
+export async function dismissPushNotifications(): Promise<void> {
+  const presented = await Notifications.getPresentedNotificationsAsync();
+  await Promise.all(
+    presented
+      .filter((n) => (n.request.trigger as { type?: string } | null)?.type === 'push')
+      .map((n) => Notifications.dismissNotificationAsync(n.request.identifier)),
+  );
 }
 
 /**

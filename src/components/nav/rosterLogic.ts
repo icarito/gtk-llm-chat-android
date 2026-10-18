@@ -5,11 +5,11 @@ import { displayName } from '@/xmpp/presence';
 export type RosterFilter = 'all' | 'agents' | 'contacts' | 'rooms';
 export type RosterKind = 'agent' | 'contact' | 'room';
 
+// Sin chip "Salas": la pestaña Salas ya cubre esa vista (las salas siguen en "Todos").
 export const ROSTER_FILTERS: { key: RosterFilter; label: string }[] = [
   { key: 'all', label: 'Todos' },
   { key: 'agents', label: 'Agentes' },
   { key: 'contacts', label: 'Contactos' },
-  { key: 'rooms', label: 'Salas' },
 ];
 
 export interface RosterItem {
