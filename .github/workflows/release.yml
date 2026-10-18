@@ -248,7 +248,7 @@ jobs:
           import os, plistlib
 
           options = {
-              "method": "app-store",
+              "method": "app-store-connect",
               "signingStyle": "manual",
               "teamID": os.environ["TEAM_ID"],
               "provisioningProfiles": {
