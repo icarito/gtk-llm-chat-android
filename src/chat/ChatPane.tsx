@@ -298,8 +298,9 @@ function renderEmpty() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   username: { color: Colors.primary, fontSize: 12, fontWeight: '600' },
-  // La lista invertida también voltea el ListEmptyComponent: se contra-invierte.
-  empty: { padding: 24, alignItems: 'center', transform: [{ scaleY: -1 }] },
+  // La lista invertida también voltea el ListEmptyComponent: se contra-invierte con la
+  // misma regla que VirtualizedList (Android scale -1 en ambos ejes, iOS sólo scaleY).
+  empty: { padding: 24, alignItems: 'center', transform: Platform.OS === 'android' ? [{ scale: -1 }] : [{ scaleY: -1 }] },
   emptyText: { color: Colors.textDim },
 });
 
