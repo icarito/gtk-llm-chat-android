@@ -2,7 +2,7 @@
   "expo": {
     "name": "gtk-llm-chat-android",
     "slug": "gtk-llm-chat-android",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "gtk-llm-chat",
@@ -28,7 +28,8 @@
         "ACCESS_NETWORK_STATE",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
-        "VIBRATE"
+        "VIBRATE",
+        "REQUEST_INSTALL_PACKAGES"
       ],
       "softwareKeyboardLayoutMode": "resize"
     },

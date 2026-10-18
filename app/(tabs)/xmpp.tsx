@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { Colors } from '@/constants/theme';
+import { useUpdateBanner } from '@/update/updater';
 import { presenceColor, presenceLabel } from '@/xmpp/presence';
 import type { XmppMessage } from '@/types/xmpp';
 import { InviteCard } from '@/components/nav/InviteCard';
@@ -88,6 +89,7 @@ export default function XmppScreen() {
   const [cachedPreviews, setCachedPreviews] = useState<Map<string, XmppMessage>>(() => new Map());
   const [loadingPreviews, setLoadingPreviews] = useState(false);
   const router = useRouter();
+  const updateBanner = useUpdateBanner();
   const autoConnectAttempted = useRef(false);
   const contactJidsKey = useMemo(
     () => contacts.map((contact) => contact.jid).sort().join('\n'),
@@ -247,6 +249,16 @@ export default function XmppScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {updateBanner.info && (
+          <TouchableOpacity style={styles.updateBanner} onPress={() => router.navigate('/yo' as never)} accessibilityRole="button">
+            <Ionicons name="download" size={16} color={Colors.background} />
+            <Text style={styles.updateBannerText}>Nueva versión v{updateBanner.info.version} disponible</Text>
+            <TouchableOpacity onPress={updateBanner.dismiss} hitSlop={10} accessibilityLabel="Descartar">
+              <Ionicons name="close" size={18} color={Colors.background} />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        )}
 
         {isReconnecting && (
           <View style={styles.reconnectBanner}>
@@ -423,6 +435,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
+  updateBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.primary, paddingHorizontal: 14, paddingVertical: 8 },
+  updateBannerText: { flex: 1, color: Colors.background, fontSize: 13, fontWeight: '600' },
   reconnectBanner: {
     flexDirection: 'row',
     alignItems: 'center',
