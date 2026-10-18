@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform, StyleSheet, Text, ToastAndroid, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import * as DocumentPicker from 'expo-document-picker';
 import { useFocusEffect } from 'expo-router';
 import {
   Chat,
@@ -15,6 +14,7 @@ import type { XmppMessage } from '@/types/xmpp';
 import { useConversation } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { RECORDING_MIME } from '@/xmpp/audioUtils';
+import { chooseAttachment } from './attachPicker';
 import { renderMessageAudio } from './AudioBubble';
 import { PendingFooter, StatusBanner, TypingFooter } from './Footers';
 import { makeRenderCustomView } from './MessageExtras';
@@ -152,17 +152,16 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     }
   }, [jid, type, replyRef]);
 
-  /** Elige un archivo y lo sube por XEP-0363 (el link se manda como OOB). */
+  /** Elige cámara/galería/archivo y lo sube por XEP-0363 (el link se manda como OOB). */
   const attaching = useRef(false);
   const onAttach = useCallback(async () => {
     if (attaching.current) return;
     attaching.current = true;
     try {
-      const picked = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-      const asset = picked.canceled ? undefined : picked.assets?.[0];
+      const asset = await chooseAttachment();
       if (!asset) return;
       const blob = await (await fetch(asset.uri)).blob();
-      await XmppService.sendFile(jid, blob, asset.name || 'file', asset.mimeType || 'application/octet-stream', type);
+      await XmppService.sendFile(jid, blob, asset.name, asset.mime, type);
     } catch (e) {
       Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e));
     } finally {

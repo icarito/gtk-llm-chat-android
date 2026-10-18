@@ -50,6 +50,14 @@
       "expo-asset",
       "expo-quick-actions",
       [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Permite usar la cámara para enviar fotos y elegir tu foto de perfil.",
+          "photosPermission": "Permite acceder a tus fotos para enviarlas y elegir tu foto de perfil.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-audio",
         {
           "microphonePermission": "Allow gtk-llm-chat to record voice messages.",

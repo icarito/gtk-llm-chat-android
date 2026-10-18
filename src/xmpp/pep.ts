@@ -47,7 +47,7 @@ function notifyAvatars(jid: string) {
  * imagen, así que un fichero por hash nunca queda obsoleto y al reabrir la app
  * no hay que volver a pedir nada.
  */
-async function fetchAvatarData(bare: string, sha: string): Promise<void> {
+export async function fetchAvatarData(bare: string, sha: string): Promise<void> {
   try {
     avatarHashes.set(bare, sha);
     const dir = `${FileSystem.cacheDirectory}avatars/`;
