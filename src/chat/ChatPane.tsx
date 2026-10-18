@@ -24,6 +24,7 @@ import { useConnectionState, useRoomNick } from './stores';
 import { ME, toIMessage, type ChatMessage } from './toIMessage';
 import { approvalTransportNotice } from './transportNotice';
 import { useHistory } from './useHistory';
+import { createDraftStore, SuggestionBar } from './SuggestionBar';
 
 // Todo lo que viaja a la lib como prop se reenvía a CADA fila, y la fila se
 // salta el render sólo si todas esas props conservan su referencia: por eso
@@ -121,6 +122,13 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   }, [jid, group]);
 
   const composingAt = useRef(0);
+  // Borrador fuera de React: pasar `text`/`renderAccessory` cambiantes a <Chat> re-renderiza todas
+  // las filas (la lib reenvía sus props a la lista). `text` se fuerza un solo render al elegir una
+  // sugerencia; después la lib vuelve a modo no controlado con el texto nuevo en su estado.
+  const draft = useMemo(createDraftStore, []);
+  const [forcedText, setForcedText] = useState<string | undefined>(undefined);
+  useEffect(() => { if (forcedText !== undefined) setForcedText(undefined); }, [forcedText]);
+  const onPick = useCallback((next: string) => { draft.set(next); setForcedText(next); }, [draft]);
   const onSend = useCallback(async (sent: ChatMessage[]) => {
     const m = sent[0];
     if (!m) return;
@@ -163,6 +171,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
 
   // XEP-0085 saliente: composing al teclear (máx. cada 8s), paused al vaciar.
   const onChangeText = useCallback((text: string) => {
+    draft.set(text);
     const now = Date.now();
     if (text.trim()) {
       if (now - composingAt.current > 8000) {
@@ -173,7 +182,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
       composingAt.current = 0;
       XmppService.sendChatState(jid, 'paused');
     }
-  }, [jid]);
+  }, [jid, draft]);
 
   // ── acciones sobre mensajes ──
   const onRetry = useCallback((id: string) => {
@@ -219,6 +228,10 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   }), [reply, clearReply]);
   const renderCustomView = useMemo(() => makeRenderCustomView(jid, onRetry), [jid, onRetry]);
   const renderFooter = useCallback(() => <TypingFooter jid={jid} />, [jid]);
+  const renderAccessory = useCallback(
+    () => <SuggestionBar jid={jid} draft={draft} onPick={onPick} />,
+    [jid, draft, onPick],
+  );
   const renderChatFooter = useCallback(() => <PendingFooter jid={jid} />, [jid]);
   const textInputProps = useMemo(() => ({
     editable: online,
@@ -259,6 +272,8 @@ function ChatPaneImpl({ jid }: { jid: string }) {
         audioRecording={AUDIO_RECORDING}
         onPressActionButton={onAttach}
         textInputProps={textInputProps}
+        text={forcedText}
+        renderAccessory={renderAccessory}
         renderFooter={renderFooter}
         renderChatFooter={renderChatFooter}
         loadEarlierMessagesProps={loadEarlierMessagesProps}

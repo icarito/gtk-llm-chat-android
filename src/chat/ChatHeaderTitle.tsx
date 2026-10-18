@@ -19,8 +19,8 @@ function ChatHeaderTitleImpl({ jid }: { jid: string }) {
   return (
     <Pressable
       style={styles.row}
-      onPress={() => router.push({ pathname: '/encryption/[jid]', params: { jid: encodeURIComponent(jid) } } as never)}
-      accessibilityLabel="Cifrado"
+      onPress={() => router.push({ pathname: room ? '/room/[jid]' : '/encryption/[jid]', params: { jid: encodeURIComponent(jid) } } as never)}
+      accessibilityLabel={room ? 'Participantes' : 'Cifrado'}
     >
       {room ? null : (
         <AgentOrb
