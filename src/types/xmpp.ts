@@ -95,6 +95,8 @@ export interface XmppRoom {
   /** Condición de error (p. ej. `conflict`, `not-authorized`) si state === 'error'. */
   error?: string;
   bookmarked: boolean;
+  /** Valor del marcador XEP-0402 (sólo con `bookmarked`). */
+  autojoin?: boolean;
   occupants: Record<string, RoomOccupant>;
   /** Nuestro rol/afiliación, tomados de la presencia propia (110). */
   role: string;
