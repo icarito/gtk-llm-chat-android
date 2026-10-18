@@ -80,7 +80,7 @@ function toReply(m: XmppMessage): ReplyMessage | undefined {
 
 function build(m: XmppMessage, self: ReadonlySet<string>): ChatMessage {
   const mine = m.direction === 'out';
-  const att = m.retracted ? null : parseAttachment(m.body, m.oobUrl);
+  const att = m.retracted ? null : parseAttachment(m.body, m.oobUrl, m.localUri);
   const text = m.retracted ? RETRACTED_TEXT : att ? att.text : m.body;
   const tool = !mine && TOOL_RE.test(text);
   const actionable = Boolean(m.quickResponses?.length || m.commands?.length);

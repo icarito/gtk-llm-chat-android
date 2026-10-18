@@ -46,7 +46,17 @@ export interface Attachment {
  * Clasifica el adjunto de un mensaje (XEP-0363 vía OOB, o un link suelto en el
  * cuerpo) y devuelve el texto restante. `null` si no hay adjunto.
  */
-export function parseAttachment(body: string, oobUrl?: string | null): Attachment | null {
+export function parseAttachment(
+  body: string,
+  oobUrl?: string | null,
+  localUri?: string | null,
+): Attachment | null {
+  // XEP-0454: la URL aesgcm:// lleva la clave en el fragmento; nunca se muestra.
+  if (body.startsWith('aesgcm://')) {
+    const path = body.split('#')[0];
+    if (!localUri) return { kind: 'file', url: '', text: 'Adjunto cifrado (no disponible)' };
+    return { kind: isAudioUrl(path) ? 'audio' : isImageUrl(path) ? 'image' : 'file', url: localUri, text: '' };
+  }
   const url = oobUrl || urlsIn(body).find((u) => isImageUrl(u.url))?.url
     || (isAudioUrl(body) ? urlsIn(body)[0]?.url : undefined);
   if (!url) return null;

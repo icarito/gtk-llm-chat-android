@@ -7,6 +7,7 @@ import { DISCO_INFO_NS, DISCO_ITEMS_NS, HTTP_UPLOAD_NS, OOB_NS } from '@/xmpp/ns
 import { session } from '@/xmpp/session';
 import { addMessageToMap } from '@/xmpp/messages';
 import { getOmemo2 } from '@/xmpp/omemo2';
+import { cacheSentMedia } from '@/xmpp/media';
 import { buildAesgcmUrl, encryptMedia } from '@/omemo2';
 
 // JID del componente XEP-0363. undefined = sin descubrir; null = el server no
@@ -126,7 +127,7 @@ export async function sendFile(
   const omemo2Eligible = omemo2 ? await omemo2.canEncryptTo(to) : false;
   let uploadBlob = blob;
   let uploadType = contentType;
-  let media: { key: Uint8Array; iv: Uint8Array } | null = null;
+  let media: { key: Uint8Array; iv: Uint8Array; plaintext: Uint8Array } | null = null;
   if (omemo2Eligible) {
     const plaintext = new Uint8Array(await blob.arrayBuffer());
     const enc = encryptMedia(plaintext);
@@ -135,7 +136,7 @@ export async function sendFile(
     ciphertext.set(enc.ciphertext);
     uploadBlob = new Blob([ciphertext.buffer], { type: 'application/octet-stream' });
     uploadType = 'application/octet-stream';
-    media = { key: enc.key, iv: enc.iv };
+    media = { key: enc.key, iv: enc.iv, plaintext };
   }
 
   const slot = await requestUploadSlot(host, filename, uploadBlob.size, uploadType);
@@ -158,7 +159,9 @@ export async function sendFile(
       throw new Error(`No hay dispositivos OMEMO 2 utilizables para ${to}`);
     }
     await client.send(xml('message', { type, to, id }, ...encryptedChildren));
+    const localUri = await cacheSentMedia(media.iv, media.key, media.plaintext);
     addMessageToMap({
+      localUri,
       id,
       from: session.account?.jid ?? '',
       to,
