@@ -19,6 +19,7 @@
     "ios": "expo run:ios"
   },
   "dependencies": {
+    "@assistant-ui/react-native": "^0.1.48",
     "@expo/vector-icons": "^15.0.2",
     "@kesha-antonov/react-native-chat": "^5.0.1",
     "@noble/ciphers": "^1.3.0",

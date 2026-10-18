@@ -6,15 +6,14 @@ import {
   Chat,
   type MessageMenuItem,
   type PartialChatTheme,
-  type ReplyMessage,
   type User,
 } from '@kesha-antonov/react-native-chat';
 import { Colors } from '@/constants/theme';
 import type { XmppMessage } from '@/types/xmpp';
 import { useConversation } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
-import { RECORDING_MIME } from '@/xmpp/audioUtils';
-import { chooseAttachment } from './attachPicker';
+import type { QuoteInfo } from '@assistant-ui/react-native';
+import { ComposerProvider, renderComposerToolbar } from './Composer';
 import { renderMessageAudio } from './AudioBubble';
 import { PendingFooter, StatusBanner, TypingFooter } from './Footers';
 import { makeRenderCustomView } from './MessageExtras';
@@ -24,7 +23,6 @@ import { useConnectionState, useRoomNick } from './stores';
 import { ME, toIMessage, type ChatMessage } from './toIMessage';
 import { approvalTransportNotice } from './transportNotice';
 import { useHistory } from './useHistory';
-import { createDraftStore, SuggestionBar } from './SuggestionBar';
 
 // Todo lo que viaja a la lib como prop se reenvía a CADA fila, y la fila se
 // salta el render sólo si todas esas props conservan su referencia: por eso
@@ -49,9 +47,7 @@ const DARK_THEME: PartialChatTheme = {
   },
 };
 const MESSAGE_TEXT_PROPS = { markdown: true } as const;
-const REPLY_SWIPE = { swipe: { isEnabled: true, direction: 'right' as const } };
 const LIST_PROPS = { keyboardShouldPersistTaps: 'handled' as const };
-const AUDIO_RECORDING = { isEnabled: true };
 // FlashList v2 no soporta `inverted` (la lib se lo pasa y lo ignora): el chat
 // quedaba al revés, lo nuevo arriba. FlatList invertida, ya ajustada por la lib.
 const USE_FLASH_LIST = false;
@@ -109,80 +105,20 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     }
   }, [live]);
 
-  // ── envío ──
-  const [reply, setReply] = useState<ReplyMessage | null>(null);
-  const clearReply = useCallback(() => setReply(null), []);
+  // ── envío ── (el composer de assistant-ui vive en Composer.tsx; aquí sólo la cita)
+  const quoteRef = useRef<((q: QuoteInfo) => void) | null>(null);
+  const quote = useCallback((m: ChatMessage) => {
+    quoteRef.current?.({ messageId: String(m._id), text: m.text.slice(0, 200) });
+  }, []);
 
-  const replyRef = useCallback((r: ReplyMessage) => {
-    const src = mergedRef.current.find((m) => m.id === String(r._id));
+  const resolveReply = useCallback((q: QuoteInfo) => {
+    const src = mergedRef.current.find((m) => m.id === q.messageId);
     if (!src) return undefined;
     const author = src.direction === 'out'
       ? bare(XmppService.getAccount()?.jid ?? '')
       : group ? `${jid}/${src.senderNick ?? src.from.split('/')[1] ?? ''}` : bare(src.from);
-    return { id: group ? src.stanzaId ?? src.id : src.id, jid: author, quotedText: r.text.slice(0, 200) };
+    return { id: group ? src.stanzaId ?? src.id : src.id, jid: author, quotedText: q.text };
   }, [jid, group]);
-
-  const composingAt = useRef(0);
-  // Borrador fuera de React: pasar `text`/`renderAccessory` cambiantes a <Chat> re-renderiza todas
-  // las filas (la lib reenvía sus props a la lista). `text` se fuerza un solo render al elegir una
-  // sugerencia; después la lib vuelve a modo no controlado con el texto nuevo en su estado.
-  const draft = useMemo(createDraftStore, []);
-  const [forcedText, setForcedText] = useState<string | undefined>(undefined);
-  useEffect(() => { if (forcedText !== undefined) setForcedText(undefined); }, [forcedText]);
-  const onPick = useCallback((next: string) => { draft.set(next); setForcedText(next); }, [draft]);
-  const onSend = useCallback(async (sent: ChatMessage[]) => {
-    const m = sent[0];
-    if (!m) return;
-    composingAt.current = 0;
-    if (XmppService.getState() !== 'online') {
-      notify('Sin conexión — no se pudo enviar');
-      return;
-    }
-    try {
-      if (m.audio) {
-        // Nota de voz: archivo local -> XEP-0363 -> link OOB.
-        const blob = await (await fetch(m.audio)).blob();
-        await XmppService.sendFile(jid, blob, `voice_${Date.now()}.m4a`, RECORDING_MIME, type);
-      } else {
-        const replyTo = m.replyMessage ? replyRef(m.replyMessage) : undefined;
-        await XmppService.sendMessage(jid, m.text.trim(), type, replyTo ? { replyTo } : {});
-      }
-    } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
-    }
-  }, [jid, type, replyRef]);
-
-  /** Elige cámara/galería/archivo y lo sube por XEP-0363 (el link se manda como OOB). */
-  const attaching = useRef(false);
-  const onAttach = useCallback(async () => {
-    if (attaching.current) return;
-    attaching.current = true;
-    try {
-      const asset = await chooseAttachment();
-      if (!asset) return;
-      const blob = await (await fetch(asset.uri)).blob();
-      await XmppService.sendFile(jid, blob, asset.name, asset.mime, type);
-    } catch (e) {
-      Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e));
-    } finally {
-      attaching.current = false;
-    }
-  }, [jid, type]);
-
-  // XEP-0085 saliente: composing al teclear (máx. cada 8s), paused al vaciar.
-  const onChangeText = useCallback((text: string) => {
-    draft.set(text);
-    const now = Date.now();
-    if (text.trim()) {
-      if (now - composingAt.current > 8000) {
-        composingAt.current = now;
-        XmppService.sendChatState(jid, 'composing');
-      }
-    } else if (composingAt.current > 0) {
-      composingAt.current = 0;
-      XmppService.sendChatState(jid, 'paused');
-    }
-  }, [jid, draft]);
 
   // ── acciones sobre mensajes ──
   const onRetry = useCallback((id: string) => {
@@ -192,7 +128,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   const messageActions = useCallback((m: ChatMessage): MessageMenuItem[] => {
     const items: MessageMenuItem[] = [];
     if (!m.meta.retracted) {
-      items.push({ label: 'Responder', onPress: () => setReply({ _id: m._id, text: m.text, user: m.user, image: m.image, audio: m.audio }) });
+      items.push({ label: 'Responder', onPress: () => quote(m) });
       items.push({ label: 'Copiar', onPress: () => { Clipboard.setStringAsync(m.text); } });
     }
     if (m.meta.mine && !m.meta.retracted) {
@@ -208,7 +144,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
       });
     }
     return items;
-  }, [jid]);
+  }, [jid, quote]);
 
   const reactions = useMemo(() => ({
     isEnabled: true,
@@ -221,23 +157,10 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   }), [jid]);
 
   // ── props estables hacia la lib ──
-  const replyProps = useMemo(() => ({
-    ...REPLY_SWIPE,
-    message: reply,
-    onClear: clearReply,
-  }), [reply, clearReply]);
+  const replyProps = useMemo(() => ({ swipe: { isEnabled: true, direction: 'right' as const, onSwipe: quote } }), [quote]);
   const renderCustomView = useMemo(() => makeRenderCustomView(jid, onRetry), [jid, onRetry]);
   const renderFooter = useCallback(() => <TypingFooter jid={jid} />, [jid]);
-  const renderAccessory = useCallback(
-    () => <SuggestionBar jid={jid} draft={draft} onPick={onPick} />,
-    [jid, draft, onPick],
-  );
   const renderChatFooter = useCallback(() => <PendingFooter jid={jid} />, [jid]);
-  const textInputProps = useMemo(() => ({
-    editable: online,
-    placeholder: online ? 'Escribe un mensaje…' : 'Sin conexión',
-    onChangeText,
-  }), [online, onChangeText]);
   const hasMessages = messages.length > 0;
   const loadEarlierMessagesProps = useMemo(() => ({
     isAvailable: !exhausted && hasMessages,
@@ -251,10 +174,10 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     <View style={styles.root}>
       {!online ? <StatusBanner text="Sin conexión — los mensajes se envían al reconectar" /> : null}
       {rehydrating || syncing ? <StatusBanner busy text={rehydrating ? 'Rehidratando historial' : 'Sincronizando MAM'} /> : null}
+      <ComposerProvider jid={jid} type={type} online={online} resolveReply={resolveReply} notify={notify} quoteRef={quoteRef}>
       <Chat<ChatMessage>
         messages={messages}
         user={ME}
-        onSend={onSend}
         locale="es"
         colorScheme="dark"
         darkTheme={DARK_THEME}
@@ -269,11 +192,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
         reply={replyProps}
         reactions={reactions}
         messageActions={messageActions}
-        audioRecording={AUDIO_RECORDING}
-        onPressActionButton={onAttach}
-        textInputProps={textInputProps}
-        text={forcedText}
-        renderAccessory={renderAccessory}
+        renderInputToolbar={renderComposerToolbar}
         renderFooter={renderFooter}
         renderChatFooter={renderChatFooter}
         loadEarlierMessagesProps={loadEarlierMessagesProps}
@@ -283,6 +202,7 @@ function ChatPaneImpl({ jid }: { jid: string }) {
         isScrollToBottomEnabled
         renderChatEmpty={renderEmpty}
       />
+      </ComposerProvider>
     </View>
   );
 }

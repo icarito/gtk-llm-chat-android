@@ -57,8 +57,9 @@ o `node-polyfills/crypto` instala un `getRandomValues` basado en Math.random.
   lista**, que se memoiza por referencia. Cualquier prop que cambie en cada
   render (un objeto literal, un callback no memoizado, el texto del
   composer) re-renderiza todas las filas. Las props van como constantes de
-  módulo o memoizadas. El borrador del composer vive en un store externo
-  (`SuggestionBar.tsx`), no en el estado de `ChatPane`.
+  módulo o memoizadas. El texto del composer vive en el store de
+  assistant-ui (`Composer.tsx`, `renderInputToolbar` estable), no en el estado
+  de `ChatPane`; nunca pases `text`/`textInputProps` cambiantes a `<Chat>`.
 
 - **`android/` e `ios/` NO se versionan (CNG).** Se regeneran con
   `npx expo prebuild --clean --no-install`. Nunca los edites a mano: el cambio
