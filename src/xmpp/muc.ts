@@ -85,6 +85,7 @@ export function ensureRoomInfo(room: string): Promise<boolean> {
       return nonAnonymous;
     }).catch(() => {
       roomInfo.delete(room); // transitorio: el próximo envío reintenta (mientras tanto, texto plano)
+      if (rooms.get(room)) rooms.patch(room, { nonAnonymous: undefined, omemoUnavailableReason: 'sin verificar' });
       return false;
     });
     roomInfo.set(room, pending);
@@ -131,14 +132,16 @@ export async function omemoRoomRecipients(room: string): Promise<string[] | null
 }
 
 /**
- * JID real (bare) del remitente de un groupchat, o null. En vivo manda el mapa de
- * ocupantes (un tercero no puede inyectar el JID); en MAM el <item jid> de
- * muc#user (el nick pudo cambiar desde entonces), con el mapa de respaldo.
+ * JID real (bare) del remitente de un groupchat, o null. Sólo de una sala en la
+ * que estamos unidos. En vivo manda SÓLO el mapa de ocupantes (un tercero puede
+ * forjar <item jid>); en MAM (`live` falso; mam.ts ya verificó el wrapper) el
+ * <item jid> de muc#user (el nick pudo cambiar desde entonces), con el mapa de respaldo.
  */
 export function resolveMucSender(stanza: Element, ownBare: string, live: boolean): string | null {
   const [room, nick] = bareJidAndNick((stanza.attrs.from as string) ?? '');
-  const item = stanza.getChild('x', NS_MUC_USER)?.getChild('item')?.attrs.jid as string | undefined;
+  const item = live ? undefined : stanza.getChild('x', NS_MUC_USER)?.getChild('item')?.attrs.jid as string | undefined;
   const r = rooms.get(room);
+  if (r?.state !== 'joined') return null;
   const mapped = !r || !nick ? undefined : nick === r.nick ? ownBare : r.occupants[nick]?.realJid;
   const jid = live ? mapped ?? item : item ?? mapped;
   return jid ? bareJid(jid) : null;

@@ -10,6 +10,7 @@ import { handleBookmarksEvent, handleMucMessage, handleMucPresence } from '@/xmp
 import { handlePubsubEvent } from '@/xmpp/pep';
 import { handleOmemo2Event } from '@/xmpp/omemo2';
 import { handleMamResult, isMamResult } from '@/xmpp/mam';
+import { bareJid } from '@/xmpp/parse';
 import { handleCarbon, handleChatMessage, isCarbon } from '@/xmpp/inbound';
 
 export async function routeStanza(stanza: Element, ctx: StanzaCtx): Promise<void> {
@@ -42,7 +43,8 @@ export async function routeStanza(stanza: Element, ctx: StanzaCtx): Promise<void
   }
 
   if (isCarbon(stanza)) {
-    await handleCarbon(stanza, ctx);
+    // XEP-0280 §6: un carbon que no viene de nuestra propia cuenta es una suplantación.
+    if (bareJid((stanza.attrs.from as string) ?? '') === bareJid(ctx.config.jid)) await handleCarbon(stanza, ctx);
     return;
   }
 

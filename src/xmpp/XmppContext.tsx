@@ -176,8 +176,10 @@ export function useRoom(jid: string): XmppRoom | undefined {
 export function useRoomOmemoLabel(jid: string): string | undefined {
   return useSyncExternalStore(roomsStore.subscribe, () => {
     const r = roomsStore.get(jid);
-    if (!r || r.nonAnonymous === undefined) return undefined;
-    if (!r.nonAnonymous) return `Sin cifrar: ${r.omemoUnavailableReason ?? 'sala anónima'}`;
+    if (!r) return undefined;
+    if (r.omemoUnavailableReason === 'sin verificar') return 'Sin verificar cifrado';
+    if (r.omemoUnavailableReason) return `Sin cifrar: ${r.omemoUnavailableReason}`;
+    if (r.nonAnonymous === undefined) return undefined;
     return r.omemoSkipped ? `OMEMO 2 · ${r.omemoSkipped} sin OMEMO 2` : 'Cifrado OMEMO 2';
   });
 }

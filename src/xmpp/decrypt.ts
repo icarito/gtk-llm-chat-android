@@ -26,8 +26,11 @@ export async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string,
     } else {
       // En una sala `fromJid` es room/nick: el remitente real sale del mapa de ocupantes o de muc#user.
       const sender = stanza.attrs.type === 'groupchat' ? resolveMucSender(stanza, engine.ownBare, live) : bareJid(fromJid);
+      const group = stanza.attrs.type === 'groupchat';
+      const to = stanza.attrs.to ? bareJid(stanza.attrs.to as string) : undefined;
+      const expectedTo = group ? bareJid((stanza.attrs.from as string) ?? '') : sender === engine.ownBare ? to : engine.ownBare;
       const r = sender
-        ? await engine.decrypt(stanza, sender, live)
+        ? await engine.decrypt(stanza, sender, live, expectedTo)
         : { body: '🔒 [OMEMO 2: remitente desconocido en la sala]', status: 'undecryptable' as const };
       if (r.status === 'omemo2' || !legacyEncrypted) {
         const attachmentLocalUri = r.body.startsWith(AESGCM_SCHEME)

@@ -53,7 +53,9 @@ const PREKEY_TARGET = 100;
 const KEY_TRANSPORT_AFTER = 53; // mensajes recibidos de un dispositivo sin contestarle (XEP-0384 §4.6)
 const NO_LIST = ['item-not-found', 'service-unavailable', 'feature-not-implemented', 'forbidden', 'remote-server-not-found'];
 const WIRE_KEY = 'omemo2:wire';
-const plainKey = (jid: string, id: string) => `omemo2:plain:${jid}:${id}`;
+// Por (conversación, remitente, id): un mismo id en otro contexto no debe colisionar.
+const plainKey = (conv: string, sender: string, id: string) => `omemo2:plain:${conv}:${sender}:${id}`;
+const legacyPlainKey = (sender: string, id: string) => `omemo2:plain:${sender}:${id}`;
 
 export type TrustState = 'blind' | 'verified' | 'distrusted';
 
@@ -430,7 +432,7 @@ export class Omemo2Engine {
     skipped.push(...withDevices.filter((jid) => !usable.includes(jid)));
     const msg = await this.sm.encryptForDevices(ready, buildEnvelope(body, { to: envTo, from: this.ownBare }));
     await Promise.all(ready.map((d) => this.kt.reset(d)));
-    await this.deps.store.set(plainKey(this.ownBare, id), body); // la copia MAM propia no lleva clave para este dispositivo
+    await this.deps.store.set(plainKey(envTo, this.ownBare, id), body); // la copia MAM propia no lleva clave para este dispositivo
     const children = [
       this.encryptedElement(msg, true),
       xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: NS_OMEMO2, name: 'OMEMO 2' }),
@@ -476,8 +478,11 @@ export class Omemo2Engine {
    * Descifra el <encrypted> de `stanza` (mensaje en vivo, carbon o MAM).
    * `senderJid` es el remitente real de la stanza (el propio JID en copias
    * salientes). `live` = cuenta para el key transport (falso en MAM).
+   * `expectedTo` = destinatario esperado del envelope SCE (la sala en groupchat;
+   * nosotros, o el contacto en una copia propia, en 1:1). En sala el <to> es
+   * obligatorio; en 1:1 si falta se acepta (clientes propios no siempre lo ponen).
    */
-  async decrypt(stanza: Element, senderJid: string, live = true): Promise<Omemo2Result> {
+  async decrypt(stanza: Element, senderJid: string, live = true, expectedTo?: string): Promise<Omemo2Result> {
     const bad = (why: string): Omemo2Result => ({ body: `🔒 [OMEMO 2: ${why}]`, status: 'undecryptable' });
     const enc = stanza.getChild('encrypted', NS_OMEMO2);
     const header = enc?.getChild('header');
@@ -490,11 +495,17 @@ export class Omemo2Engine {
     const quiet = (why: string) => (payload ? bad(why) : { body: '', status: 'undecryptable' as const });
     const dev: DeviceRef = { jid: bareJid(senderJid), rid: sid };
     const id = stanza.attrs.id;
+    const group = stanza.attrs.type === 'groupchat';
+    const conv = (group || dev.jid === this.ownBare ? expectedTo : dev.jid) ?? dev.jid;
+    const cachedPlain = async () => {
+      if (!id) return null;
+      return (await this.deps.store.get(plainKey(conv, dev.jid, id))) ?? this.deps.store.get(legacyPlainKey(dev.jid, id));
+    };
     if (!mine) {
       console.warn('[OMEMO2] sin clave para este dispositivo', this.deviceId, 'de', dev.jid, dev.rid, 'rids:',
         header.getChildren('keys').map((k) => `${k.attrs.jid}:${k.getChildren('key').map((x) => x.attrs.rid).join(',')}`).join(' '));
       // Típico en MAM: la copia de lo que enviamos desde este dispositivo no lleva clave para él.
-      const cached = id ? await this.deps.store.get(plainKey(dev.jid, id)) : null;
+      const cached = await cachedPlain();
       return cached !== null ? { body: cached, status: 'omemo2' } : quiet('no descifrable en este dispositivo');
     }
     const trust = this.state.trust[tk(dev.jid, dev.rid)];
@@ -511,13 +522,13 @@ export class Omemo2Engine {
         this.reportIdentityChange(dev, ik);
         return quiet('la identidad del dispositivo cambió');
       }
-      const cached = id ? await this.deps.store.get(plainKey(dev.jid, id)) : null;
+      const cached = await cachedPlain();
       if (cached !== null) return { body: cached, status: 'omemo2' };
       return quiet('error al descifrar');
     }
 
     if (await this.noteIdentity(dev, res.peerIk) === 'distrusted') {
-      if (id && res.plaintext) await this.deps.store.set(plainKey(dev.jid, id), parseEnvelope(res.plaintext).body ?? '');
+      if (id && res.plaintext) await this.deps.store.set(plainKey(conv, dev.jid, id), parseEnvelope(res.plaintext).body ?? '');
       return quiet('dispositivo nuevo sin confianza');
     }
     await this.replenish().catch((e) => console.warn('[OMEMO2] replenish failed', e));
@@ -525,8 +536,11 @@ export class Omemo2Engine {
     if (!res.plaintext) return { body: '', status: 'omemo2' }; // key transport
     const env = parseEnvelope(res.plaintext);
     if (env.from !== undefined && bareJid(env.from) !== dev.jid) return bad('remitente no coincide');
+    if (group ? env.to === undefined || bareJid(env.to) !== expectedTo : env.to !== undefined && expectedTo !== undefined && bareJid(env.to) !== expectedTo) {
+      return bad('destinatario no coincide');
+    }
     const body = env.body ?? '';
-    if (id) await this.deps.store.set(plainKey(dev.jid, id), body);
+    if (id) await this.deps.store.set(plainKey(conv, dev.jid, id), body);
 
     if (live) {
       const n = await this.kt.increment(dev);

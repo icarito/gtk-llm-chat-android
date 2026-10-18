@@ -49,7 +49,7 @@ export async function joinRoom(jid: string, nick?: string, opts: JoinOptions = {
   resetRoomOmemo(room); // disco#info y afiliaciones se piden de nuevo en cada join
   rooms.patch(
     room,
-    { nick: chosen, state: 'joining', error: undefined, occupants: {} },
+    { nick: chosen, state: 'joining', error: undefined, occupants: {}, nonAnonymous: undefined, membersOnly: undefined, omemoUnavailableReason: undefined, omemoSkipped: undefined },
     { name: displayName(room) },
   );
   await client.send(buildJoinPresence(room, chosen, { password: opts.password }));

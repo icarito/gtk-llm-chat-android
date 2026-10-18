@@ -66,7 +66,13 @@ async function encryptOutbound(
     if (engine) {
       const peers = await omemoRoomRecipients(to);
       const res = peers ? await engine.encryptOutgoingGroup(to, peers, id, body) : null;
-      if (rooms.get(to)) rooms.patch(to, { omemoSkipped: res?.skipped.length ?? 0 });
+      const room = rooms.get(to);
+      if (room) {
+        const reason = res ? undefined
+          : !engine.isEnabledFor(to) ? 'cifrado desactivado'
+          : room.nonAnonymous ? 'nadie con OMEMO 2' : room.omemoUnavailableReason;
+        rooms.patch(to, { omemoSkipped: res?.skipped.length ?? 0, omemoUnavailableReason: reason });
+      }
       return res ? { children: res.children, status: 'omemo2' } : null;
     }
   }

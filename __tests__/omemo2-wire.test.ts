@@ -4,7 +4,7 @@ import { join } from 'path';
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import { parse } from 'ltx';
-import { MemoryStore, SessionManager } from '@/omemo2';
+import { MemoryStore, SessionManager, buildEnvelope, parseEnvelope } from '@/omemo2';
 import { decryptStanzaIfEncrypted } from '@/xmpp/decrypt';
 import {
   NODE_BUNDLES,
@@ -377,7 +377,7 @@ describe('OMEMO 2 en salas MUC', () => {
     expect(mam).toMatchObject({ decryptedBody: 'quién soy', encryptionStatus: 'omemo2' });
 
     // Envelope con to=sala aceptado arriba; un remitente real distinto del `from` firmado se rechaza.
-    const wrong = await carol.engine.decrypt(roomWire(out, 'alice', CAROL), 'mallory@x.org');
+    const wrong = await carol.engine.decrypt(roomWire(out, 'alice', CAROL), 'mallory@x.org', true, ROOM);
     expect(wrong.body).toContain('remitente no coincide');
   });
 
@@ -389,6 +389,77 @@ describe('OMEMO 2 en salas MUC', () => {
     await alice.engine.encryptOutgoingGroup(ROOM, [BOB], 'g1', 'x');
     await alice.engine.setTrust(BOB, bob.engine.deviceId, 'distrusted');
     await expect(alice.engine.encryptOutgoingGroup(ROOM, [BOB], 'g2', 'x')).rejects.toThrow('sin dispositivos utilizables');
+  });
+});
+
+describe('SCE <to> y confianza en muc#user', () => {
+  const envTo: { v: string | undefined } = { v: undefined };
+  const rewriteEnvelope = (e: Omemo2Engine) => {
+    const sm = (e as unknown as { sm: { encryptForDevices: (d: unknown, env: Uint8Array) => Promise<unknown> } }).sm;
+    const orig = sm.encryptForDevices.bind(sm);
+    sm.encryptForDevices = (d, env) => orig(d, buildEnvelope(parseEnvelope(env).body!, { from: ALICE, ...(envTo.v ? { to: envTo.v } : {}) }));
+  };
+  const inbound = (stanza: Element) => decryptStanzaIfEncrypted(stanza, `${stanza.attrs.from}`);
+
+  test('un ciphertext 1:1 reinyectado como groupchat, o de la sala A entregado como sala B, se rechaza', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    const bob = await party(pep, BOB);
+    const carol = await party(pep, CAROL);
+    setOmemo2ForTest(bob.engine);
+    setRoom('bob', { alice: ALICE, bob: BOB });
+    const oneToOne = wire(ALICE, BOB, 'm1', (await alice.engine.encryptOutgoing(BOB, 'm1', 'privado'))!);
+    oneToOne.attrs.type = 'groupchat';
+    oneToOne.attrs.from = `${ROOM}/alice`;
+    const r = await inbound(oneToOne);
+    expect(r).toMatchObject({ encryptionStatus: 'undecryptable' });
+    expect(r.decryptedBody).toContain('destinatario no coincide');
+
+    const sent = roomClient(true);
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, carol: CAROL });
+    await sendMessage(ROOM, 'solo sala A', 'groupchat');
+    setOmemo2ForTest(carol.engine);
+    rooms.patch('otra@muc.x.org', { nick: 'carol', state: 'joined', occupants: { alice: { nick: 'alice', realJid: `${ALICE}/phone`, role: 'participant', affiliation: 'member', isAgent: false } } }, {});
+    const other = roomWire(sent[0], 'alice', CAROL);
+    other.attrs.from = 'otra@muc.x.org/alice';
+    const r2 = await inbound(other);
+    expect(r2.decryptedBody).toContain('destinatario no coincide');
+  });
+
+  test('1:1 sin <to> se acepta; con <to> ajeno se rechaza', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    const bob = await party(pep, BOB);
+    setOmemo2ForTest(bob.engine);
+    rewriteEnvelope(alice.engine);
+    const ok = await inbound(wire(ALICE, BOB, 'm1', (await alice.engine.encryptOutgoing(BOB, 'm1', 'sin to'))!));
+    expect(ok.decryptedBody).toBe('sin to');
+    envTo.v = 'otro@x.org';
+    const bad = await inbound(wire(ALICE, BOB, 'm2', (await alice.engine.encryptOutgoing(BOB, 'm2', 'to ajeno'))!));
+    expect(bad.decryptedBody).toContain('destinatario no coincide');
+  });
+
+  test('muc#user forjado: en vivo gana el mapa de ocupantes; sin sala unida o ocupante, nada', async () => {
+    const pep = new FakePep();
+    const alice = await party(pep, ALICE);
+    const bob = await party(pep, BOB);
+    const sent = roomClient(true);
+    setOmemo2ForTest(alice.engine);
+    setRoom('alice', { alice: ALICE, bob: BOB });
+    await sendMessage(ROOM, 'x', 'groupchat');
+    const forged = xml('x', { xmlns: 'http://jabber.org/protocol/muc#user' }, xml('item', { jid: `${ALICE}/phone` }));
+
+    setOmemo2ForTest(bob.engine);
+    setRoom('bob', { bob: BOB });
+    const stranger = roomWire(sent[0], 'evil', BOB, [forged]);
+    expect((await inbound(stranger)).decryptedBody).toContain('remitente desconocido');
+    // Mapa dice mallory: manda el mapa, no el item forjado.
+    setRoom('bob', { bob: BOB, evil: 'mallory@x.org' });
+    expect((await inbound(stranger)).decryptedBody).toContain('remitente no coincide');
+    // Sala no unida: sin resolución aunque el item exista.
+    rooms.patch(ROOM, { state: 'left' });
+    expect((await decryptStanzaIfEncrypted(stranger, `${ROOM}/evil`, false)).decryptedBody).toContain('remitente desconocido');
   });
 });
 

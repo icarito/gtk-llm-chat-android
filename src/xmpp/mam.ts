@@ -351,6 +351,11 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
     const fromAttr = (message.attrs.from as string) || '';
     const fromBare = bareJid(fromAttr);
     const ownBare = bareJid(config.jid);
+    // <item jid> de muc#user sólo vale si el wrapper viene de la sala (archivo de sala) o de nuestro archivo.
+    const outer = stanza.attrs.from ? bareJid(stanza.attrs.from as string) : ownBare;
+    if (outer !== fromBare && outer !== ownBare) {
+      message.children = message.children.filter((c) => typeof c === 'string' || c.name !== 'x' || c.attrs.xmlns !== 'http://jabber.org/protocol/muc#user');
+    }
     const direction = fromBare === ownBare ? 'out' : 'in';
     const senderJid = direction === 'out' ? ownBare : fromBare;
 
