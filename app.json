@@ -8,7 +8,7 @@
     "scheme": "gtk-llm-chat",
     "userInterfaceStyle": "dark",
     "ios": {
-      "bundleIdentifier": "org.fuentelibre.gtk-llm-chat",
+      "bundleIdentifier": "org.fuentelibre.exit-x-chat",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Allow gtk-llm-chat to record voice messages.",
         "UIBackgroundModes": [

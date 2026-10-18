@@ -137,7 +137,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     env:
-      BUNDLE_ID: org.fuentelibre.gtk-llm-chat
+      BUNDLE_ID: org.fuentelibre.exit-x-chat
     steps:
       # `secrets` no se puede usar en un `if` de job/paso. Se resuelve aca y el
       # resto de los pasos queda gateado por los outputs.
@@ -252,7 +252,7 @@ jobs:
               "signingStyle": "manual",
               "teamID": os.environ["TEAM_ID"],
               "provisioningProfiles": {
-                  "org.fuentelibre.gtk-llm-chat": os.environ["PROFILE_NAME"],
+                  os.environ["BUNDLE_ID"]: os.environ["PROFILE_NAME"],
               },
               "uploadSymbols": True,
               "stripSwiftSymbols": True,
