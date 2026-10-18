@@ -1,7 +1,6 @@
 APK := android/app/build/outputs/apk/release/app-release.apk
 PACKAGE := org.fuentelibre.gtk_llm_chat
 GOOGLE_SERVICES := google-services.json
-ANDROID_GOOGLE_SERVICES := android/app/google-services.json
 
 .PHONY: check prepare-fcm build-release install-release reinstall-release launch push-logs prosody-push-logs
 
@@ -10,10 +9,11 @@ check:
 	npm run lint
 	npm test -- --runTestsByPath __tests__/mam-parse.test.ts __tests__/xmpp-actions.test.ts
 
+# CNG: google-services.json vive en la raíz; app.config.js lo detecta y el
+# prebuild lo copia a android/ y aplica el plugin de Gradle.
 prepare-fcm:
 	test -f $(GOOGLE_SERVICES)
-	mkdir -p android/app
-	cp $(GOOGLE_SERVICES) $(ANDROID_GOOGLE_SERVICES)
+	npx expo prebuild --clean --no-install -p android
 	grep -q 'com.google.gms:google-services' android/build.gradle
 	grep -q 'com.google.gms.google-services' android/app/build.gradle
 

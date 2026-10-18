@@ -26,25 +26,25 @@ src/
     xep-0050.ts            → Comandos ad-hoc
     xep-0308.ts            → Corrección de mensajes
   constants/               → Tema oscuro
-android/
-  app/src/main/java/…      → Módulo nativo: foreground service del XMPP.
-                             SE VERSIONA (ver más abajo).
+modules/                   → Módulos Expo locales (Kotlin): xmpp-foreground
+                             (foreground service) y omemo-legacy (OMEMO/Signal).
+plugins/                   → Config plugins propios (network security config)
 ```
 
 ## Stack
 
-- Expo SDK 52 + Expo Router v4
+- Expo SDK 57 (RN 0.86, React 19, New Architecture) + Expo Router v57
 - TypeScript en modo estricto (`any` prohibido)
 - Tema oscuro (`#0A0E14`)
 - `@xmpp/client` sobre WebSocket
 
 ## Trampas que ya nos han mordido
 
-- **`android/` se versiona.** Este proyecto tiene código nativo propio, así que
-  no se regenera entero desde `app.json`. El `.gitignore` sólo excluye lo que
-  produce el build.
-- **Los iconos salen de `app.json`**, no de editar `android/app/src/main/res/`
-  a mano: un `prebuild` regenera ese directorio. El arte de `assets/` ya lleva
+- **`android/` e `ios/` NO se versionan (CNG).** Se regeneran con
+  `npx expo prebuild --clean --no-install`. Nunca los edites a mano: el cambio
+  se pierde. Las personalizaciones nativas van en `app.json`/`app.config.js`,
+  `plugins/` o `modules/`. Inventario y flujo en `docs/native-cng.md`.
+- **Los iconos salen de `app.json`.** El arte de `assets/` ya lleva
   su margen (Android sólo garantiza el 66% central del adaptive icon).
 - **El `ver` de las caps XEP-0115 no es un SHA-1 real** (no hay SHA-1 en el
   bundle de RN): es un identificador opaco. Si cambias `CAPS_FEATURES`, **súbelo

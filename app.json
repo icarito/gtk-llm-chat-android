@@ -5,17 +5,18 @@
     "version": "0.1.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
-    "scheme": "gtk-llm-chat",
+    "scheme": [
+      "gtk-llm-chat",
+      "org.fuentelibre.gtk_llm_chat"
+    ],
     "userInterfaceStyle": "dark",
-    "splash": {
-      "backgroundColor": "#0A0E14",
-      "image": "./assets/splash.png",
-      "resizeMode": "contain"
-    },
     "ios": {
       "bundleIdentifier": "org.fuentelibre.gtk-llm-chat",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Allow gtk-llm-chat to record voice messages."
+        "NSMicrophoneUsageDescription": "Allow gtk-llm-chat to record voice messages.",
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -27,8 +28,12 @@
       "package": "org.fuentelibre.gtk_llm_chat",
       "versionCode": 2,
       "permissions": [
-        "RECORD_AUDIO"
-      ]
+        "ACCESS_NETWORK_STATE",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "VIBRATE"
+      ],
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",
@@ -46,28 +51,36 @@
       "expo-font",
       "expo-secure-store",
       "expo-asset",
+      "expo-quick-actions",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow gtk-llm-chat to record voice messages.",
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "backgroundColor": "#0A0E14",
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-system-ui",
       [
         "expo-build-properties",
         {
           "android": {
-            "minSdkVersion": 29,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35
+            "minSdkVersion": 29
           }
         }
       ],
-      "expo-quick-actions",
-      [
-        "expo-av",
-        {
-          "microphonePermission": "Allow gtk-llm-chat to record voice messages."
-        }
-      ]
+      "./plugins/withNetworkSecurityConfig"
     ],
     "experiments": {
       "typedRoutes": true
     },
-    "sdkVersion": "52.0.0"
-  },
-  "name": "gtk-llm-chat-android"
+    "newArchEnabled": true
+  }
 }

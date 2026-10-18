@@ -43,7 +43,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useVoiceRecorder } from '@/xmpp/voiceRecorder';
 import { isAudioUrl } from '@/xmpp/audioUtils';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { splitMarkdownTables, type MarkdownTable } from '@/xmpp/markdownTables';
 
 const LAST_CHAT_KEY = '@gtk_llm_chat:last_chat_jid';
@@ -449,12 +449,12 @@ function AudioBubble({ url, duration }: { url: string; duration?: number | null 
   const [error, setError] = useState<string | null>(null);
   const [position, setPosition] = useState(0);
   const [soundDuration, setSoundDuration] = useState(duration ?? 0);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const soundRef = useRef<AudioPlayer | null>(null);
 
   useEffect(() => {
     return () => {
       if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
+        soundRef.current.remove();
         soundRef.current = null;
       }
     };
@@ -464,22 +464,21 @@ function AudioBubble({ url, duration }: { url: string; duration?: number | null 
     if (loading || error) return;
 
     if (playing && soundRef.current) {
-      await soundRef.current.pauseAsync();
+      soundRef.current.pause();
       setPlaying(false);
       return;
     }
 
     if (soundRef.current) {
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+          shouldPlayInBackground: false,
+          shouldRouteThroughEarpiece: false,
         });
-        const status = await soundRef.current.playAsync();
-        setPlaying(status.isLoaded);
+        soundRef.current.play();
+        setPlaying(true);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -488,29 +487,26 @@ function AudioBubble({ url, duration }: { url: string; duration?: number | null 
 
     setLoading(true);
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        shouldDuckAndroid: false,
-        playThroughEarpieceAndroid: false,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
+        shouldRouteThroughEarpiece: false,
       });
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: url },
-        { shouldPlay: true, progressUpdateIntervalMillis: 200 },
-        (status) => {
-          if (!status.isLoaded) return;
-          if (status.didJustFinish) {
-            setPlaying(false);
-            setPosition(0);
-          } else if (status.isPlaying) {
-            setPosition(status.positionMillis / 1000);
-            if (status.durationMillis && !duration) {
-              setSoundDuration(status.durationMillis / 1000);
-            }
+      const newSound = createAudioPlayer({ uri: url }, { updateInterval: 200 });
+      newSound.addListener('playbackStatusUpdate', (status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          setPlaying(false);
+          setPosition(0);
+        } else if (status.playing) {
+          setPosition(status.currentTime);
+          if (status.duration && !duration) {
+            setSoundDuration(status.duration);
           }
-        },
-      );
+        }
+      });
+      newSound.play();
       soundRef.current = newSound;
       setPlaying(true);
     } catch (e) {
