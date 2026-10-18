@@ -1,5 +1,6 @@
 import { memo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text } from 'react-native';
+import { router } from 'expo-router';
 import { AgentOrb } from '@/components/agent/AgentOrb';
 import { Colors } from '@/constants/theme';
 import { useAgentState, useRoom } from '@/xmpp/XmppContext';
@@ -16,7 +17,11 @@ function ChatHeaderTitleImpl({ jid }: { jid: string }) {
     ? Math.min(Math.round((agent.telemetry.context.used / agent.telemetry.context.max) * 100), 100)
     : undefined;
   return (
-    <View style={styles.row}>
+    <Pressable
+      style={styles.row}
+      onPress={() => router.push({ pathname: '/encryption/[jid]', params: { jid: encodeURIComponent(jid) } } as never)}
+      accessibilityLabel="Cifrado"
+    >
       {room ? null : (
         <AgentOrb
           size={14}
@@ -30,7 +35,7 @@ function ChatHeaderTitleImpl({ jid }: { jid: string }) {
       <Text style={styles.title} numberOfLines={1}>
         {room ? room.name || displayName(jid) : displayName(jid, contact?.name)}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
