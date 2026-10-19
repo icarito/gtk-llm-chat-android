@@ -5,6 +5,7 @@ import type { QuoteInfo } from '@assistant-ui/react-native';
 import { ComposerProvider, renderComposerToolbar } from '@/chat/Composer';
 import { XmppService } from '@/xmpp/XmppService';
 
+jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 48, left: 0, right: 0 }) }));
 jest.mock('@/xmpp/XmppService', () => ({
   XmppService: {
     getState: jest.fn(() => 'online'),

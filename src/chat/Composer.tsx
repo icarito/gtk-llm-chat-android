@@ -14,6 +14,7 @@ import {
   type QuoteInfo,
   type ThreadMessage,
 } from '@assistant-ui/react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
 import { Colors } from '@/constants/theme';
 import { XmppService } from '@/xmpp/XmppService';
@@ -263,8 +264,11 @@ function Input() {
 /** Toolbar de <Chat>: referencia estable (constante de módulo), todo su estado va por aui. */
 export function ComposerToolbar() {
   const { jid } = useCtx();
+  // App edge-to-edge: sin este padding el input queda debajo de la barra de navegación
+  // de Android (el InputToolbar de la lib lo hacía; el nuestro lo había perdido).
+  const { bottom } = useSafeAreaInsets();
   return (
-    <View>
+    <View style={[styles.wrap, { paddingBottom: bottom }]}>
       <ChatStateReporter />
       <SuggestionBar jid={jid} />
       <ComposerPrimitive.Quote style={styles.quote}>
@@ -295,6 +299,7 @@ export function ComposerToolbar() {
 export const renderComposerToolbar = () => <ComposerToolbar />;
 
 const styles = StyleSheet.create({
+  wrap: { backgroundColor: Colors.surface },
   root: { flexDirection: 'row', alignItems: 'flex-end', gap: 6, padding: 8, backgroundColor: Colors.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.surfaceBorder },
   input: { flex: 1, minHeight: 40, maxHeight: 120, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, color: Colors.text, fontSize: 16 },
   round: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
