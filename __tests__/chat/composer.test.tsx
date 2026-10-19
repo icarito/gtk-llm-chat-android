@@ -17,11 +17,13 @@ jest.mock('@/xmpp/XmppService', () => ({
 }));
 jest.mock('@/xmpp/XmppContext', () => ({ useRoom: () => undefined }));
 jest.mock('@/chat/attachPicker', () => ({ chooseAttachment: jest.fn() }));
+const mockRecorder = { prepareToRecordAsync: jest.fn(), record: jest.fn(), stop: jest.fn(), uri: 'file:///v.m4a' };
 jest.mock('expo-audio', () => ({
-  AudioModule: { requestRecordingPermissionsAsync: jest.fn() },
+  AudioModule: { requestRecordingPermissionsAsync: jest.fn(async () => ({ granted: true })) },
   RecordingPresets: { HIGH_QUALITY: {} },
   setAudioModeAsync: jest.fn(),
-  useAudioRecorder: () => ({}),
+  useAudioRecorder: () => mockRecorder,
+  useAudioRecorderState: () => ({ durationMillis: 7000, metering: -20 }),
 }));
 
 const rows = jest.fn();
@@ -81,4 +83,21 @@ test('el adjunto se previsualiza, se puede quitar y sólo sube al enviar', async
   fireEvent.press(screen.getByLabelText('Enviar'));
   await flush();
   expect(XmppService.sendFile).toHaveBeenCalledWith('a@b', 'BLOB', 'x.pdf', 'application/pdf', 'chat');
+});
+
+test('nota de voz: feedback inmediato, deslizar cancela y no sube', async () => {
+  (XmppService.sendFile as jest.Mock).mockClear();
+  render(<Harness quoteRef={{ current: null }} resolveReply={jest.fn()} />);
+  const mic = screen.getByLabelText('Mantén presionado para grabar una nota de voz');
+  act(() => { mic.props.onResponderGrant({ nativeEvent: { pageX: 300 } }); });
+  // Sin esperar permiso/prepare: la barra ya está a la vista.
+  expect(screen.getByText('‹ Desliza para cancelar')).toBeTruthy();
+  expect(screen.getByText('0:07')).toBeTruthy();
+  expect(screen.queryByPlaceholderText('Escribe un mensaje…')).toBeNull();
+  act(() => { mic.props.onResponderMove({ nativeEvent: { pageX: 150 } }); });
+  expect(screen.getByText('Suelta para cancelar')).toBeTruthy();
+  act(() => { mic.props.onResponderRelease(); });
+  await flush();
+  expect(XmppService.sendFile).not.toHaveBeenCalled();
+  expect(screen.getByPlaceholderText('Escribe un mensaje…')).toBeTruthy();
 });

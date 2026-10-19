@@ -2,7 +2,7 @@
   "expo": {
     "name": "gtk-llm-chat-android",
     "slug": "gtk-llm-chat-android",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "gtk-llm-chat",
