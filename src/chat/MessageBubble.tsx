@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from 'react';
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import type { MessageState } from '@assistant-ui/react-native';
@@ -9,6 +9,8 @@ import { AudioBubbleForMessage } from './AudioBubble';
 import { MessageExtras } from './MessageExtras';
 import { MessageBody } from './richText';
 import { ME, type ChatMessage } from './toIMessage';
+import { Avatar } from './Avatar';
+import { useCtx } from './Composer';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉'] as const;
 
@@ -23,6 +25,8 @@ interface Props {
 
 function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Props) {
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
+  const [selectOpen, setSelectOpen] = useState(false);
+  const { insertMention } = useCtx();
   const raw = (message.metadata.custom as { chat?: ChatMessage }).chat;
   if (!raw) return null;
   const chat = raw;
@@ -62,23 +66,38 @@ function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Pr
 
   return (
     <View style={[styles.row, mine ? styles.rowMine : styles.rowIncoming]}>
+      {!mine ? (
+        <View style={styles.avatarSlot}>
+          <Avatar jid={chat.realJid ?? chat.user._id} name={chat.user.name} size={30} />
+        </View>
+      ) : null}
       <View style={[styles.bubbleWrap, mine ? styles.bubbleWrapMine : styles.bubbleWrapIncoming]}>
         {group && !mine && chat.user.name ? (
-          <Text style={styles.username}>{chat.user.name}</Text>
+          <Pressable
+            onPress={() => insertMention(chat.user.name ?? '')}
+            accessibilityRole="button"
+            accessibilityLabel={`Mencionar ${chat.user.name}`}
+          >
+            <Text style={styles.username}>{chat.user.name}</Text>
+          </Pressable>
         ) : null}
         {chat.replyMessage ? (
           <View style={styles.reply}>
             <Text style={styles.replyText} numberOfLines={2}>{chat.replyMessage.text}</Text>
           </View>
         ) : null}
-        <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleIncoming]}>
+        <Pressable
+          style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleIncoming]}
+          onLongPress={() => setSelectOpen(true)}
+          accessibilityHint="Mantén pulsado para seleccionar texto"
+        >
           {body}
           {chat.meta.extras ? (
             <MessageExtras jid={jid} message={chat} onRetry={onRetry} />
           ) : null}
-        </View>
+        </Pressable>
         {chat.reactions && chat.reactions.length > 0 ? (
-          <View style={styles.reactions}>
+          <View style={[styles.reactions, mine ? styles.reactionsMine : styles.reactionsIncoming]}>
             {chat.reactions.map((r) => (
               <Pressable
                 key={r.emoji}
@@ -122,6 +141,10 @@ function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Pr
               <Ionicons name="copy-outline" size={18} color={Colors.primary} />
               <Text style={styles.menuLabel}>Copiar</Text>
             </Pressable>
+            <Pressable style={styles.menuItem} onPress={() => { setMenuFor(null); setSelectOpen(true); }}>
+              <Ionicons name="text-outline" size={18} color={Colors.primary} />
+              <Text style={styles.menuLabel}>Seleccionar texto</Text>
+            </Pressable>
             {menuFor?.meta.mine && !menuFor.meta.retracted ? (
               <Pressable
                 style={[styles.menuItem, styles.menuItemDestructive]}
@@ -147,6 +170,36 @@ function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Pr
           </View>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={selectOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectOpen(false)}
+      >
+        <View style={styles.selectBackdrop}>
+          <View style={styles.selectCard}>
+            <Text style={styles.selectTitle}>Mensaje</Text>
+            <TextInput
+              multiline
+              value={chat.text}
+              onChangeText={() => {}}
+              showSoftInputOnFocus={false}
+              selectionColor={Colors.primary}
+              contextMenuHidden={false}
+              style={styles.selectInput}
+            />
+            <View style={styles.selectActions}>
+              <Pressable style={styles.selectBtn} onPress={() => { void Clipboard.setStringAsync(chat.text); }}>
+                <Text style={styles.selectBtnText}>Copiar todo</Text>
+              </Pressable>
+              <Pressable style={styles.selectBtn} onPress={() => setSelectOpen(false)}>
+                <Text style={styles.selectBtnText}>Cerrar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -164,6 +217,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 4 },
   rowMine: { justifyContent: 'flex-end' },
   rowIncoming: { justifyContent: 'flex-start' },
+  avatarSlot: { marginRight: 6, alignSelf: 'flex-end', paddingBottom: 2 },
   bubbleWrap: { maxWidth: '82%' },
   bubbleWrapMine: { alignItems: 'flex-end' },
   bubbleWrapIncoming: { alignItems: 'flex-start' },
@@ -184,21 +238,31 @@ const styles = StyleSheet.create({
   bubbleIncoming: { backgroundColor: Colors.assistantBubble, borderWidth: 1, borderColor: Colors.assistantBubbleBorder },
   retracted: { color: Colors.textDim, fontSize: 15, fontStyle: 'italic' },
   image: { width: 220, height: 220, borderRadius: 12 },
-  reactions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  reactions: {
+    position: 'absolute',
+    bottom: -12,
+    flexDirection: 'row',
+    gap: 4,
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.surfaceBorder,
+    zIndex: 2,
+  },
+  reactionsMine: { right: 10 },
+  reactionsIncoming: { left: 10 },
   reactionChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+    paddingHorizontal: 4,
+    borderRadius: 10,
   },
-  reactionChipMine: { borderColor: Colors.primary },
-  reactionEmoji: { fontSize: 14 },
-  reactionCount: { color: Colors.textDim, fontSize: 12 },
+  reactionChipMine: { backgroundColor: 'rgba(79,195,247,0.18)' },
+  reactionEmoji: { fontSize: 13 },
+  reactionCount: { color: Colors.textDim, fontSize: 11 },
   actionsBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   menu: { backgroundColor: Colors.surface, borderRadius: 14, padding: 8, minWidth: 220 },
@@ -209,4 +273,23 @@ const styles = StyleSheet.create({
   menuReact: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.surfaceBorder, marginTop: 4 },
   reactionBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background },
   reactionBtnMine: { backgroundColor: Colors.primary, borderWidth: 1, borderColor: Colors.primary },
+  selectBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
+  selectCard: { backgroundColor: Colors.surface, borderRadius: 14, padding: 16, gap: 12 },
+  selectTitle: { color: Colors.textDim, fontSize: 13, fontWeight: '600' },
+  selectInput: {
+    color: Colors.text,
+    fontSize: 15,
+    lineHeight: 22,
+    maxHeight: 320,
+    minHeight: 120,
+    backgroundColor: Colors.inputBackground,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    padding: 12,
+    textAlignVertical: 'top',
+  },
+  selectActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  selectBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: Colors.primary },
+  selectBtnText: { color: Colors.background, fontWeight: '700', fontSize: 14 },
 });

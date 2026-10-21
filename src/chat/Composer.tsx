@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ActivityIndicator, Alert, Animated, Linking, Platform, Pressable, StyleSheet, Text, Vibration, View, type TextInputKeyPressEventData } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -25,6 +26,15 @@ import type { ChatMessage } from './toIMessage';
 
 export type ReplyTo = { id: string; jid: string; quotedText: string };
 
+export type MentionApi = {
+  /** Completa la mención actual (token `@…`) con `name` y reinicia el menú. */
+  complete: (name: string) => void;
+  /** Cantidad de sugerencias abiertas (0 = no hay menú). */
+  count: number;
+  /** Primera sugerencia (la que completa Tab). */
+  first?: string;
+};
+
 type Ctx = {
   jid: string;
   type: 'chat' | 'groupchat';
@@ -36,9 +46,13 @@ type Ctx = {
   composingAt: MutableRefObject<number>;
   /** Envía el borrador actual del composer (texto + adjuntos + cita) por XMPP. */
   sendComposer: () => Promise<void>;
+  /** Inserta `@name ` al final del borrador (tap en un nombre / mención). */
+  insertMention: (name: string) => void;
+  /** API del menú de menciones (para completar con Tab desde el input). */
+  mentionRef: MutableRefObject<MentionApi>;
 };
 const ComposerCtx = createContext<Ctx | null>(null);
-const useCtx = () => {
+export const useCtx = () => {
   const c = useContext(ComposerCtx);
   if (!c) throw new Error('Composer fuera de ComposerProvider');
   return c;
@@ -78,7 +92,7 @@ async function upload(c: { jid: string; type: 'chat' | 'groupchat' }, uri: strin
 }
 
 /** Expone el runtime aui y el envío manual a las vistas del chat. */
-export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onLoadEarlier, isLoading, ...ctx }: Omit<Ctx, 'composingAt' | 'sendComposer'> & {
+export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onLoadEarlier, isLoading, ...ctx }: Omit<Ctx, 'composingAt' | 'sendComposer' | 'insertMention' | 'mentionRef'> & {
   quoteRef: MutableRefObject<((q: QuoteInfo) => void) | null>;
   messages: readonly ChatMessage[];
   hasEarlier?: boolean;
@@ -87,9 +101,18 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
   children: ReactNode;
 }) {
   const composingAt = useRef(0);
+  const sendingRef = useRef(false);
+  const mentionRef = useRef<MentionApi>({ complete: () => {}, count: 0 });
   const auiRef = useRef<ReturnType<typeof useAui> | null>(null);
 
-  const base = useMemo<Omit<Ctx, 'sendComposer'>>(
+  const insertMention = useCallback((name: string) => {
+    const aui = auiRef.current;
+    if (!aui || !name) return;
+    const st = aui.composer.getState();
+    aui.composer.setText(`${st.text.replace(/\s+$/, '')} @${name} `);
+  }, []);
+
+  const base = useMemo<Omit<Ctx, 'sendComposer' | 'insertMention' | 'mentionRef'>>(
     () => ({ ...ctx, composingAt }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ctx.jid, ctx.type, ctx.online, ctx.resolveReply, ctx.notify],
@@ -128,26 +151,42 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
     const attachments = st.attachments;
     if (!text && attachments.length === 0) return;
     if (XmppService.getState() !== 'online') { base.notify('Sin conexión — no se pudo enviar'); return; }
-    for (const a of attachments) {
-      const file = (a as unknown as { file?: PickedFile }).file;
-      const uri = file?.uri;
-      if (!uri) continue;
-      const name = file?.name ?? a.name ?? 'adjunto';
-      const mime = file?.mime ?? a.contentType ?? 'application/octet-stream';
-      try { await upload(base, uri, name, mime); }
-      catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
-    }
-    if (!text) { await aui.composer.reset(); return; }
-    try {
-      const replyTo = quote ? base.resolveReply(quote) : undefined;
-      await XmppService.sendMessage(base.jid, text, base.type, replyTo ? { replyTo } : {});
-      await aui.composer.reset();
-    } catch (e) {
-      base.notify(e instanceof Error ? e.message : String(e));
-    }
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    // Limpiar el composer de INMEDIATO (optimista): el texto desaparece ya y no
+    // hay sensación de poder reenviar el mismo mensaje.
+    await aui.composer.reset();
+    // El envío (adjuntos + stanza) corre en background: la UI nunca espera por
+    // red. Si algo falla, el mensaje queda como "failed" en el store y se puede
+    // reintentar desde la burbuja.
+    void (async () => {
+      try {
+        for (const a of attachments) {
+        const file = (a as unknown as { file?: PickedFile }).file;
+        const uri = file?.uri;
+        if (!uri) continue;
+        const name = file?.name ?? a.name ?? 'adjunto';
+        const mime = file?.mime ?? a.contentType ?? 'application/octet-stream';
+        try { await upload(base, uri, name, mime); }
+        catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
+      }
+        if (!text) return;
+        try {
+          const replyTo = quote ? base.resolveReply(quote) : undefined;
+          await XmppService.sendMessage(base.jid, text, base.type, replyTo ? { replyTo } : {});
+        } catch (e) {
+          base.notify(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        sendingRef.current = false;
+      }
+    })();
   }, [base]);
 
-  const value = useMemo<Ctx>(() => ({ ...base, sendComposer }), [base, sendComposer]);
+  const value = useMemo<Ctx>(
+    () => ({ ...base, sendComposer, insertMention, mentionRef }),
+    [base, sendComposer, insertMention, mentionRef],
+  );
 
   const runtime = useExternalStoreRuntime<ChatMessage>({
     messages,
@@ -160,10 +199,11 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
     adapters: { attachments: attachmentAdapter },
   });
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
+      <AssistantRuntimeProvider runtime={runtime}>
       <ComposerCtx.Provider value={value}>
         <AuiBridge auiRef={auiRef} />
         <QuoteBridge quoteRef={quoteRef} />
+        <DraftPersistence jid={ctx.jid} />
         {children}
       </ComposerCtx.Provider>
     </AssistantRuntimeProvider>
@@ -187,6 +227,33 @@ function QuoteBridge({ quoteRef }: { quoteRef: MutableRefObject<((q: QuoteInfo) 
     quoteRef.current = (q) => aui.composer.setQuote(q);
     return () => { quoteRef.current = null; };
   }, [aui, quoteRef]);
+  return null;
+}
+
+const DRAFT_KEY = (jid: string) => `composer.draft:${jid}`;
+
+/** Borrador por sala: se guarda (debounced) y se restaura al reentrar, para
+ *  retomar una idea aunque se cierre el cliente. Se borra al llegar a vacío. */
+function DraftPersistence({ jid }: { jid: string }) {
+  const aui = useAui();
+  const text = useAuiState((s) => s.composer.text);
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    AsyncStorage.getItem(DRAFT_KEY(jid)).then((saved) => {
+      if (saved && saved.trim() && aui.composer.getState().text === '') {
+        aui.composer.setText(saved);
+      }
+    }).catch(() => {});
+  }, [jid, aui]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (text.trim()) void AsyncStorage.setItem(DRAFT_KEY(jid), text).catch(() => {});
+      else void AsyncStorage.removeItem(DRAFT_KEY(jid)).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [text, jid]);
   return null;
 }
 
@@ -423,15 +490,24 @@ function SendOrMic() {
 }
 
 function Input() {
-  const { online, sendComposer } = useCtx();
+  const { online, sendComposer, mentionRef } = useCtx();
   return (
     <ComposerPrimitive.Input
       submitMode="none"
       multiline
       editable={online}
+      testID="composer-input"
       onKeyPress={(e) => {
         if (Platform.OS !== 'web') return;
         const ne = e.nativeEvent as TextInputKeyPressEventData & { shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
+        if (ne.key === 'Tab') {
+          const m = mentionRef.current;
+          if (m.count > 0 && m.first) {
+            (e as unknown as { preventDefault?: () => void }).preventDefault?.();
+            m.complete(m.first);
+          }
+          return;
+        }
         if (ne.key === 'Enter' && !ne.shiftKey && !ne.isComposing && ne.keyCode !== 229) {
           (e as unknown as { preventDefault?: () => void }).preventDefault?.();
           void sendComposer();
@@ -441,6 +517,47 @@ function Input() {
       placeholderTextColor={Colors.textDim}
       style={styles.input}
     />
+  );
+}
+
+/** Autocompletado de menciones `@` (sólo desktop/web): muestra sugerencias de
+ *  ocupantes/contactos y las completa con Enter/Tab o tap. En mobile no se
+ *  pinta para no robar foco ni teclado. */
+function MentionBar() {
+  const { jid, mentionRef } = useCtx();
+  const aui = useAui();
+  const text = useAuiState((s) => s.composer.text);
+  const candidates = useMemo(() => {
+    const room = typeof XmppService.rooms?.get === 'function' ? XmppService.rooms.get(jid) : undefined;
+    if (room) return Object.keys(room.occupants).filter((n) => n && n !== room.nick);
+    const local = jid.split('@')[0];
+    return local ? [local] : [];
+  }, [jid]);
+  const prefix = (text.match(/(?:^|\s)@([^\s@]*)$/)?.[1] ?? '').toLowerCase();
+  const suggestions = useMemo(() => {
+    if (!text.match(/(?:^|\s)@[^\s@]*$/)) return [];
+    return candidates.filter((n) => n.toLowerCase().startsWith(prefix)).slice(0, 6);
+  }, [candidates, prefix, text]);
+  useEffect(() => {
+    mentionRef.current = {
+      complete: (name) => {
+        const idx = text.lastIndexOf('@');
+        const before = idx >= 0 ? text.slice(0, idx) : text.replace(/\s+$/, '');
+        aui.composer.setText(`${before}@${name} `);
+      },
+      count: suggestions.length,
+      first: suggestions[0],
+    };
+  }, [text, suggestions, aui, mentionRef]);
+  if (Platform.OS !== 'web' || suggestions.length === 0) return null;
+  return (
+    <View style={styles.mentionBar}>
+      {suggestions.map((n) => (
+        <Pressable key={n} style={styles.mentionChip} onPress={() => mentionRef.current.complete(n)} accessibilityRole="button">
+          <Text style={styles.mentionChipText}>@{n}</Text>
+        </Pressable>
+      ))}
+    </View>
   );
 }
 
@@ -454,6 +571,7 @@ export function ComposerToolbar() {
     <View style={[styles.wrap, { paddingBottom: bottom }]}>
       <ChatStateReporter />
       <SuggestionBar jid={jid} />
+      <MentionBar />
       <ComposerPrimitive.Quote style={styles.quote}>
         <ComposerPrimitive.QuoteText numberOfLines={2} style={styles.quoteText} />
         <ComposerPrimitive.QuoteDismiss accessibilityLabel="Cancelar respuesta">
@@ -488,6 +606,9 @@ const styles = StyleSheet.create({
   input: { flex: 1, minHeight: 40, maxHeight: 120, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, color: Colors.text, fontSize: 16 },
   round: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   send: { backgroundColor: Colors.primary },
+  mentionBar: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 8, paddingTop: 4 },
+  mentionChip: { backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  mentionChipText: { color: Colors.primary, fontSize: 13, fontWeight: '600' },
   recording: { backgroundColor: Colors.error, transform: [{ scale: 1.25 }] },
   recordingCancel: { backgroundColor: Colors.surfaceBorder },
   disabled: { opacity: 0.4 },

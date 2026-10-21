@@ -62,6 +62,8 @@ export interface MessageMeta {
 
 export interface ChatMessage extends IMessageLike {
   meta: MessageMeta;
+  /** Groupchat: JID real (bare) del remitente si se pudo resolver (avatares). */
+  realJid?: string | null;
 }
 
 const users = new Map<string, User>();
@@ -132,6 +134,7 @@ function build(m: XmppMessage, self: ReadonlySet<string>): ChatMessage {
     ...(mine && m.sendState === 'sent' ? { sent: true } : {}),
     ...(reactions ? { reactions } : {}),
     ...(replyMessage ? { replyMessage } : {}),
+    realJid: m.senderRealJid ?? undefined,
     meta: {
       mine,
       sendState: m.sendState,

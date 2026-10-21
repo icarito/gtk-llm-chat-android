@@ -44,6 +44,7 @@ export function buildRoster(
   rooms: readonly XmppRoom[],
   agentJids: ReadonlySet<string>,
   lastMessage: (jid: string) => XmppMessage | undefined,
+  unreadCount: (jid: string) => number,
 ): RosterItem[] {
   const items: RosterItem[] = [];
   for (const contact of contacts) {
@@ -66,7 +67,13 @@ export function buildRoster(
       room,
     });
   }
-  return items.sort((a, b) => b.activity - a.activity || a.name.localeCompare(b.name));
+  // Urgencia primero: conversaciones con no leídos arriba; dentro, por actividad reciente.
+  return items.sort((a, b) => {
+    const ua = unreadCount(a.jid);
+    const ub = unreadCount(b.jid);
+    if ((ua > 0) !== (ub > 0)) return ua > 0 ? -1 : 1;
+    return b.activity - a.activity || a.name.localeCompare(b.name);
+  });
 }
 
 export function filterRoster(items: readonly RosterItem[], filter: RosterFilter): RosterItem[] {

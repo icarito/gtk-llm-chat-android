@@ -162,6 +162,7 @@ function AgentBarInner({ jid }: { jid: string }) {
             commands={commands}
             onCommand={onCommand}
             brainUrl={brain}
+            jid={jid}
           />
           <ElevatedSwitch jid={jid} online={online} />
         </View>
