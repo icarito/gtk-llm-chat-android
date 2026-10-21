@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
-import { Avatar } from '@/chat/Avatar';
+import { AvatarWithPresence } from '@/chat/Avatar';
 import { useConnectionState, useContact } from '@/chat/stores';
 import { XmppService } from '@/xmpp/XmppService';
 import { useAgentState } from '@/xmpp/XmppContext';
@@ -50,8 +50,7 @@ export const MindAgentRow = memo(function MindAgentRow({ jid }: { jid: string })
       <View style={styles.head}>
         <Pressable style={styles.expand} onPress={() => setExpanded((v) => !v)} accessibilityRole="button">
           <View style={styles.avatarWrap}>
-            <Avatar jid={jid} name={contact?.name} size={40} />
-            <View style={[styles.dot, { backgroundColor: presence }]} />
+            <AvatarWithPresence jid={jid} name={contact?.name} size={40} presence={presence} ring={2.5} />
           </View>
           <View style={styles.info}>
             <Text style={styles.name} numberOfLines={1}>{displayName(jid, contact?.name)}</Text>

@@ -4,9 +4,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { AgentActivityIndicator } from '@/components/agent/AgentActivityIndicator';
 import { CommandFormDialog } from '@/components/agent/CommandFormDialog';
-import { MindAgentRow } from '@/components/agent/MindAgentRow';
 import { MindPanel, type MindCommand } from '@/components/agent/MindPanel';
-import { useAgentJids } from '@/components/nav/hooks';
+import { RoomMembersBar } from '@/components/room/RoomMembersBar';
 import { Colors } from '@/constants/theme';
 import { openExternalUrl } from '@/platform/openExternalUrl';
 import { useAgentCaps } from '@/xmpp/caps';
@@ -184,34 +183,11 @@ function AgentBarInner({ jid }: { jid: string }) {
 }
 
 /** Franja de estado del agente bajo el header. En 1:1 con un agente muestra su
- *  panel; en una sala (MUC) muestra la "mente" compacta de cada agente que esté
- *  participando (real JID resuelto del ocupante). */
+ *  panel; en una sala (MUC) muestra una franja de miembros colapsable: avatares
+ *  con anillo de presencia (orbe) y, al expandir, stats de los agentes. */
 function AgentBarImpl({ jid }: { jid: string }) {
   const room = useRoom(jid);
-  const agentJids = useAgentJids();
-  const roomAgents = useMemo(() => {
-    if (!room) return [];
-    const set = new Set(agentJids.map((a) => a.split('/')[0]));
-    const found: string[] = [];
-    for (const occ of Object.values(room.occupants)) {
-      const rj = occ.realJid;
-      if (!rj) continue;
-      const bareRJ = rj.split('/')[0];
-      if (set.has(bareRJ) && !found.includes(bareRJ)) found.push(bareRJ);
-    }
-    return found;
-  }, [room, agentJids]);
-
-  if (room) {
-    if (roomAgents.length === 0) return null;
-    return (
-      <View style={styles.roomMente}>
-        <Text style={styles.roomMenteTitle}>Mente</Text>
-        {roomAgents.map((jid) => <MindAgentRow key={jid} jid={jid} />)}
-      </View>
-    );
-  }
-
+  if (room) return <RoomMembersBar jid={jid} />;
   return <AgentBarInner jid={jid} />;
 }
 
@@ -219,8 +195,6 @@ export const AgentBar = memo(AgentBarImpl);
 
 const styles = StyleSheet.create({
   bar: { backgroundColor: Colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.surfaceBorder },
-  roomMente: { backgroundColor: Colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.surfaceBorder, paddingBottom: 8 },
-  roomMenteTitle: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, color: Colors.textDim, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 2 },
   strip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
   dot: { width: 9, height: 9, borderRadius: 5 },
   model: { color: Colors.primary, fontSize: 11, fontWeight: '700', flexShrink: 1 },

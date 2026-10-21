@@ -3,13 +3,14 @@ import '../node-polyfills/crypto';
 import '../node-polyfills/process';
 import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
-import { AppState, Platform } from 'react-native';
+import { AppState, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { XmppProvider } from '@/xmpp/XmppContext';
+import LaunchOverlay from '@/components/launch/LaunchOverlay';
 import { XmppService } from '@/xmpp/XmppService';
 import { setupNotifications, setAppForeground, dismissStaleNotifications } from '@/xmpp/notifications';
 import { shortcutJid } from '@/xmpp/shortcuts';
@@ -125,6 +126,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <XmppProvider>
+          <View style={styles.root}>
           <Stack
             screenOptions={{
               headerShown: false,
@@ -169,6 +171,8 @@ export default function RootLayout() {
               }}
             />
           </Stack>
+          <LaunchOverlay />
+          </View>
         </XmppProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

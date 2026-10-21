@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/theme';
-import { displayName } from '@/xmpp/presence';
+import { displayName, presenceColor } from '@/xmpp/presence';
 import { XmppService } from '@/xmpp/XmppService';
 
 function safeGetAvatarUri(bare: string): string | null {
@@ -82,6 +82,29 @@ function AvatarImpl({ jid, name, size = 30 }: Props) {
 }
 
 export const Avatar = memo(AvatarImpl);
+
+type PresenceProps = {
+  jid: string;
+  name?: string | null;
+  size?: number;
+  /** Presencia (red/away/available/offline/…): dibuja un anillo de color. */
+  presence?: string;
+  /** Ancho del anillo (px). */
+  ring?: number;
+};
+
+/** Avatar con anillo de presencia: para los agentes la "orbe" de presencia ES el
+ *  avatar mismo con un anillo de color (en vez de un punto separado). */
+export const AvatarWithPresence = memo(function AvatarWithPresence({
+  jid, name, size = 30, presence, ring = 2.5,
+}: PresenceProps) {
+  const color = presence ? presenceColor(presence) : Colors.surfaceBorder;
+  return (
+    <View style={{ borderRadius: (size + ring * 2) / 2, borderWidth: ring, borderColor: color, padding: 0 }}>
+      <Avatar jid={jid} name={name} size={size} />
+    </View>
+  );
+});
 
 const styles = StyleSheet.create({
   circle: { overflow: 'hidden', backgroundColor: Colors.surfaceBorder },
