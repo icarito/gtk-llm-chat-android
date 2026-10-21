@@ -32,7 +32,7 @@
         "VIBRATE",
         "REQUEST_INSTALL_PACKAGES"
       ],
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "pan"
     },
     "web": {
       "bundler": "metro",
