@@ -7,6 +7,7 @@ import { Colors } from '@/constants/theme';
 import type { XmppMessage } from '@/types/xmpp';
 import { useConversation } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
+import { getOmemo2 } from '@/xmpp/omemo2';
 import type { QuoteInfo } from '@assistant-ui/react-native';
 import { ComposerProvider, ComposerToolbar } from './Composer';
 import { PendingFooter, StatusBanner, TypingIndicator } from './Footers';
@@ -42,9 +43,11 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   const [syncTick, setSyncTick] = useState(0);
   const listRef = useRef<FlatList<ThreadMessage> | null>(null);
   const anchoredRef = useRef<string | null>(null);
+  const enteredAtRef = useRef<number | null>(Date.now());
   useFocusEffect(useCallback(() => {
     setSyncTick((t) => t + 1);
     anchoredRef.current = null;
+    enteredAtRef.current = Date.now();
     // Desktop/web: auto-enfoque del input al entrar a la sala (en mobile no,
     // para no abrir el teclado virtual).
     if (Platform.OS === 'web') {
@@ -93,31 +96,61 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     return () => clearTimeout(t);
   }, [jid, displayMessages.length, rehydrating, syncing]);
 
-  // Pegajoso: mientras el usuario esté al final, el contenido nuevo (mensajes,
-  // "escribiendo…") debe mostrarse al vuelo. Se desactiva al arrastrar.
+  // Control de scroll 100% manual (desactivamos el autoScroll de la librería,
+  // que competía con nuestros scrollToEnd y causaba "lanzadas" hacia arriba).
+  //
+  // Reglas:
+  // - Al entrar (ventana de ~1.5s) anclamos una vez al final, cuando el
+  //   contenido ya está medido.
+  // - Mientras el usuario esté REALMENTE en el borde inferior, cualquier cambio
+  //   de tamaño (mensaje nuevo, "escribiendo…") re-ancla al final.
+  // - En cuanto el usuario se aleja del borde (scroll manual), soltamos el
+  //   anclaje por completo: no volvemos a saltar.
   const atBottomRef = useRef(true);
-  const wasPinnedRef = useRef(true);
+  const nearBottomRef = useRef(true);
+  const withinEntryGrace = () => {
+    const t = enteredAtRef.current;
+    return t !== null && Date.now() - t < 1500;
+  };
   const onScroll = useCallback((e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    // Consideramos "al final" el borde mismo de la lista (sin margen arbitrario):
-    // así el autoscroll llega hasta el último elemento y no se queda a 8px.
-    const atBottom = contentSize.height <= layoutMeasurement.height + 1
-      || contentSize.height - contentOffset.y - layoutMeasurement.height <= 1;
+    const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    const atBottom = contentSize.height <= layoutMeasurement.height + 1 || distance <= 24;
     atBottomRef.current = atBottom;
-    if (atBottom) wasPinnedRef.current = true;
+    // "Cerca del final": dentro de una pantalla de alto desde abajo.
+    nearBottomRef.current = atBottom || distance <= layoutMeasurement.height;
   }, []);
-  // `onScrollBeginDrag` sólo se dispara con un arrastre real del usuario (no con
-  // scroll programático); es el único que suelta el anclaje.
-  const onScrollBeginDrag = useCallback(() => { atBottomRef.current = false; wasPinnedRef.current = false; }, []);
-  const onContentSizeChange = useCallback((_w: number, h: number) => {
-    // Si estamos (o estábamos) pegados al final, ante cualquier cambio de tamaño
-    // (mensaje nuevo, descifrado tardío, "escribiendo…") re-anclamos al final
-    // REAL: scrollToEnd con el padding del contenido incluido.
-    if (h <= 0) return;
-    if (atBottomRef.current || wasPinnedRef.current) {
-      listRef.current?.scrollToEnd({ animated: false });
+  const onScrollBeginDrag = useCallback(() => { atBottomRef.current = false; nearBottomRef.current = false; }, []);
+
+  // Scroll al final con reintentos: el footer ("escribiendo…") modifica el
+  // tamaño del contenido y en web ese layout puede quedar listo unos frames
+  // después; una sola llamada puede aterrizar antes del footer.
+  const scrollToEndNow = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+    for (const delay of [0, 60, 150]) {
+      setTimeout(() => list?.scrollToEnd({ animated: false }), delay);
     }
   }, []);
+
+  const onContentSizeChange = useCallback((_w: number, h: number) => {
+    if (h <= 0) return;
+    if (atBottomRef.current || nearBottomRef.current || withinEntryGrace()) {
+      scrollToEndNow();
+    }
+  }, [scrollToEndNow]);
+
+  // "escribiendo…" como footer: al aparecer, re-anclamos (si estamos cerca del
+  // final o sin haber hecho scroll manual).
+  const prevTypingRef = useRef(typing);
+  useEffect(() => {
+    const appears = typing && !prevTypingRef.current;
+    prevTypingRef.current = typing;
+    if (!appears) return;
+    if (atBottomRef.current || nearBottomRef.current || withinEntryGrace()) {
+      scrollToEndNow();
+    }
+  }, [typing, scrollToEndNow]);
 
   // Avatares XEP-0084: pedir el de cada remitente entrante que aún no tenemos
   // (los eventos PEP sólo llegan cuando publican algo nuevo).
@@ -139,19 +172,31 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     }
   }, [merged]);
 
-  // OMEMO: si quedaron mensajes sin descifrar (motor aún no listo o device list
-  // pendiente), reintenta una vez: refresca device list del contacto y re-dispara
-  // el catch-up de MAM para que el descifrado se re-intente y cure los placeholders.
-  const retriedDecryptRef = useRef(false);
+  // OMEMO: si quedaron mensajes sin descifrar (motor aún no listo al entrar en
+  // frío, o device list pendiente), reintenta en un bucle acotado: espera a que
+  // el motor OMEMO 2 esté listo, refresca la device list del contacto y re-dispara
+  // el catch-up de MAM para que el descifrado se re-intente y cure los placeholders
+  // (p.ej. en la primera entrada a un chat con un agente). Se detiene cuando ya
+  // no quedan mensajes bloqueados o al agotar los intentos.
   useEffect(() => {
-    if (!online || retriedDecryptRef.current) return;
-    const hasLocked = merged.some((m) => isUndecryptableBody(m.body));
-    if (!hasLocked) return;
-    retriedDecryptRef.current = true;
-    XmppService.omemo2.refresh(bare(jid)).then(() => {
-      setSyncTick((t) => t + 1);
-    }).catch(() => {});
-  }, [online, merged, jid]);
+    if (!online || !jid) return;
+    const hasLocked = () => mergedRef.current.some((m) => isUndecryptableBody(m.body));
+    if (!hasLocked()) return;
+    let stopped = false;
+    let tries = 0;
+    const attempt = () => {
+      if (stopped) return;
+      if (!getOmemo2()) {
+        if (tries++ < 12) setTimeout(attempt, 700);
+        return;
+      }
+      XmppService.omemo2.refresh(bare(jid))
+        .then(() => { if (!stopped) setSyncTick((t) => t + 1); })
+        .catch(() => {});
+    };
+    attempt();
+    return () => { stopped = true; };
+  }, [online, jid]);
 
   // Avisos de transporte del gateway: toast en vez de burbuja.
   const toasted = useRef(new Set<string>());
@@ -220,8 +265,6 @@ function ChatPaneImpl({ jid }: { jid: string }) {
             style={styles.list}
             contentContainerStyle={hasMessages ? styles.listContent : styles.emptyContent}
             keyboardShouldPersistTaps="handled"
-            autoScroll
-            scrollToBottomOnInitialize
             scrollEventThrottle={16}
             onScroll={onScroll}
             onScrollBeginDrag={onScrollBeginDrag}
