@@ -3,8 +3,8 @@
 // puede mover un valor a otra clave). La clave de 32 bytes vive en
 // expo-secure-store (el límite de ~2KB de SecureStore descarta guardar ahí el estado).
 import { gcm } from '@noble/ciphers/aes';
-import * as SecureStore from 'expo-secure-store';
-import * as SQLite from 'expo-sqlite';
+import * as SecureStore from './storageKey';
+import * as SQLite from '@/xmpp/historyDatabase';
 import { bytesToHex, fromUtf8, hexToBytes, randomBytes, utf8 } from './bytes';
 import { b64decode, b64encode } from './base64';
 import type { OmemoStore } from './store';
@@ -21,7 +21,7 @@ async function loadDbKey(): Promise<Uint8Array> {
 }
 
 export class SqliteOmemoStore implements OmemoStore {
-  private ready: Promise<{ db: SQLite.SQLiteDatabase; key: Uint8Array }> | null = null;
+  private ready: Promise<{ db: SQLite.HistoryDatabase; key: Uint8Array }> | null = null;
 
   private open() {
     if (!this.ready) {

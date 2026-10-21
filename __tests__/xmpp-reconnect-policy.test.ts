@@ -52,6 +52,7 @@ jest.mock('@/xmpp/ForegroundService', () => ({
 jest.mock('@/xmpp/xep-0384', () => ({
   Omemo: {
     isEnabled: () => false,
+    isSupported: () => false,
     init: jest.fn().mockResolvedValue(undefined),
     removeOwnDevice: jest.fn().mockResolvedValue(undefined),
   },

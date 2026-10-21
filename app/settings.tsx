@@ -28,7 +28,7 @@ export function SettingsBody() {
         <View style={styles.settingCopy}>
           <Text style={styles.settingTitle}>Cifrado OMEMO</Text>
           <Text style={styles.settingHint}>
-            OMEMO 1 compatible con Rolando, Gajim y Dino. Cambiarlo reconecta la sesión XMPP.
+            OMEMO 2 para mensajes y salas compatibles. Cambiarlo reconecta la sesión XMPP.
           </Text>
           {account && <Text style={styles.account}>{account.jid}</Text>}
         </View>

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
-import type { MessageAudioProps } from '@kesha-antonov/react-native-chat';
 import { Colors } from '@/constants/theme';
 import type { ChatMessage } from './toIMessage';
 
@@ -103,9 +102,9 @@ function AudioBubble({ url, duration }: { url: string; duration?: number | null 
   );
 }
 
-/** renderMessageAudio de la lib: nota de voz / audio adjunto. */
-export function renderMessageAudio({ currentMessage }: MessageAudioProps<ChatMessage>) {
-  return <AudioBubble url={currentMessage.audio ?? ''} duration={currentMessage.duration} />;
+/** Nota de voz / audio adjunto dentro de la burbuja. */
+export function AudioBubbleForMessage({ message }: { message: ChatMessage }) {
+  return <AudioBubble url={message.audio ?? ''} duration={message.duration} />;
 }
 
 const styles = StyleSheet.create({

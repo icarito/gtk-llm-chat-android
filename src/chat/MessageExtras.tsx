@@ -1,8 +1,8 @@
 import { memo, useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { BubbleProps } from '@kesha-antonov/react-native-chat';
 import { Colors } from '@/constants/theme';
+import { openExternalUrl } from '@/platform/openExternalUrl';
 import { isEncrypted } from '@/xmpp/encryption';
 import { fileNameFromUrl } from './attachments';
 import { ApprovalForMessage } from './ApprovalForMessage';
@@ -38,7 +38,7 @@ function MessageExtrasImpl({ jid, message, onRetry }: Props) {
   return (
     <View style={styles.wrap}>
       {meta.fileUrl ? (
-        <TouchableOpacity style={styles.file} onPress={() => Linking.openURL(meta.fileUrl!)}>
+        <TouchableOpacity style={styles.file} onPress={() => { void openExternalUrl(meta.fileUrl!); }}>
           <Ionicons name="document-outline" size={18} color={Colors.primary} />
           <Text style={styles.fileName} numberOfLines={1}>{fileNameFromUrl(meta.fileUrl)}</Text>
         </TouchableOpacity>
@@ -67,15 +67,7 @@ function MessageExtrasImpl({ jid, message, onRetry }: Props) {
 }
 
 // Los extras sólo dependen del mensaje (referencia estable por versión) y del jid.
-const MessageExtras = memo(MessageExtrasImpl, (a, b) => a.message === b.message && a.jid === b.jid);
-
-/** Fábrica de renderCustomView con identidad estable por conversación (se crea una vez con useMemo). */
-export function makeRenderCustomView(jid: string, onRetry: (id: string) => void) {
-  return function renderCustomView({ currentMessage }: BubbleProps<ChatMessage>) {
-    if (!currentMessage.meta.extras) return null;
-    return <MessageExtras jid={jid} message={currentMessage} onRetry={onRetry} />;
-  };
-}
+export const MessageExtras = memo(MessageExtrasImpl, (a, b) => a.message === b.message && a.jid === b.jid);
 
 const styles = StyleSheet.create({
   wrap: { gap: 6 },

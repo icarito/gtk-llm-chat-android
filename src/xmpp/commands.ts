@@ -2,7 +2,7 @@
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
 import type { DataForm, XmppInlineCommand } from '@/types/xmpp';
-import { buildFormElement, parseSubmitForm } from '@/xmpp/xep-0004';
+import { buildFormElement, parseForm, parseSubmitForm } from '@/xmpp/xep-0004';
 import { buildCommandExecuteStanza } from '@/xmpp/outbound-render';
 import { COMMAND_NS, DISCO_ITEMS_NS } from '@/xmpp/ns';
 import { usableClient } from '@/xmpp/session';
@@ -17,7 +17,7 @@ function noteText(command: Element): string {
  *  attached one (xmpp-approval-unified-contract), the structured XEP-0004
  *  `type="result"` form as parsed var->value pairs. `fields` is `{}` when
  *  the server didn't attach a result form -- most ad-hoc commands don't. */
-type CommandResult = { text: string; fields: Record<string, string> };
+export type CommandResult = { text: string; fields: Record<string, string> };
 
 export async function executeCommandWithFields(targetJid: string, node: string, form?: DataForm): Promise<CommandResult> {
   const client = usableClient();
@@ -64,6 +64,66 @@ function resultFields(command: Element): Record<string, string> {
 
 export async function executeCommand(targetJid: string, node: string, form?: DataForm): Promise<string> {
   return (await executeCommandWithFields(targetJid, node, form)).text;
+}
+
+/** Primer paso de un comando genérico: ejecuta y, si el servidor lo pide, devuelve el form XEP-0004. */
+export type AdhocCommandBegin =
+  | { status: 'completed'; result: CommandResult }
+  | { status: 'executing'; sessionid: string; node: string; name: string; form: DataForm };
+
+export async function beginAdhocCommand(targetJid: string, node: string): Promise<AdhocCommandBegin> {
+  const client = usableClient();
+  if (!client) {
+    throw new Error('XMPP not connected');
+  }
+
+  const first = await client.iqCaller.request(
+    buildCommandExecuteStanza(
+      targetJid,
+      node,
+      `cmd-${Date.now().toString(36)}`,
+    ),
+    30000,
+  );
+  const command = first.getChild('command', COMMAND_NS);
+  if (!command) throw new Error('Invalid command response');
+  if (command.attrs.status === 'completed') {
+    return { status: 'completed', result: { text: noteText(command), fields: resultFields(command) } };
+  }
+
+  const sessionid = command.attrs.sessionid as string | undefined;
+  if (!sessionid) throw new Error('Command did not return a session id');
+
+  const x = command.getChild('x', 'jabber:x:data');
+  const form = x ? parseForm(x) : undefined;
+  if (!form) throw new Error('Command requires a form submission');
+
+  return { status: 'executing', sessionid, node, name: (command.attrs.node as string | undefined) ?? node, form };
+}
+
+/** Envía el form XEP-0004 de un comando ad-hoc (fase `complete`). */
+export async function submitAdhocCommand(
+  targetJid: string,
+  node: string,
+  sessionid: string,
+  form: DataForm,
+): Promise<CommandResult> {
+  const client = usableClient();
+  if (!client) {
+    throw new Error('XMPP not connected');
+  }
+
+  const second = await client.iqCaller.request(
+    xml(
+      'iq',
+      { type: 'set', to: targetJid, id: `cmd-submit-${Date.now().toString(36)}` },
+      xml('command', { xmlns: COMMAND_NS, node, sessionid, action: 'complete' }, buildFormElement(form)),
+    ),
+    30000,
+  );
+  const command = second.getChild('command', COMMAND_NS);
+  if (!command) throw new Error('Invalid command submit response');
+  return { text: noteText(command), fields: resultFields(command) };
 }
 
 export async function listAdhocCommands(targetJid: string): Promise<XmppInlineCommand[]> {

@@ -3,12 +3,15 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/theme';
 import { useAgentState } from '@/xmpp/XmppContext';
 import { useContact } from '@/chat/stores';
+import { useAgentCaps } from '@/xmpp/caps';
 import { displayName, presenceColor, presenceLabel } from '@/xmpp/presence';
 
 /** Tarjeta compacta de agente: presencia + actividad/estado desde agentState. */
 export const AgentCard = memo(function AgentCard({ jid, onPress }: { jid: string; onPress: (jid: string) => void }) {
   const contact = useContact(jid);
   const state = useAgentState(jid);
+  const caps = useAgentCaps(jid);
+  if (!caps.caps?.isAgent) return null;
   const activity = state?.activity || state?.availability || contact?.status || presenceLabel(contact?.presence ?? 'offline');
   const detail = [state?.model, state?.tool && `🔧 ${state.tool}`, state?.pendingCount ? `${state.pendingCount} en cola` : '']
     .filter(Boolean).join(' · ');

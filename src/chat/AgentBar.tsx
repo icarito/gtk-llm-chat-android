@@ -1,14 +1,19 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Platform, Pressable, StyleSheet, Switch, Text, ToastAndroid, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Switch, Text, ToastAndroid, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { AgentActivityIndicator } from '@/components/agent/AgentActivityIndicator';
+import { CommandFormDialog } from '@/components/agent/CommandFormDialog';
 import { MindPanel, type MindCommand } from '@/components/agent/MindPanel';
 import { Colors } from '@/constants/theme';
+import { openExternalUrl } from '@/platform/openExternalUrl';
+import { useAgentCaps } from '@/xmpp/caps';
+import { beginAdhocCommand, submitAdhocCommand } from '@/xmpp/commands';
 import { fetchFleet, useBrainUrl } from '@/xmpp/fleet';
 import { useAgentState, useRoom } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { presenceColor } from '@/xmpp/presence';
+import type { DataForm } from '@/types/xmpp';
 import { useConnectionState, useContact } from './stores';
 
 const MAINTENANCE_RE = /abort|reset|restart|stop|clear|compact|new|kill|reiniciar|detener/i;
@@ -53,6 +58,14 @@ function ElevatedSwitch({ jid, online }: { jid: string; online: boolean }) {
 
 function AgentBarInner({ jid }: { jid: string }) {
   const [open, setOpen] = useState(false);
+  const [pendingForm, setPendingForm] = useState<{ jid: string; node: string; sessionid: string; name: string; form: DataForm } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const caps = useAgentCaps(jid);
+  const isAgent = caps.caps?.isAgent === true;
+  // Sólo se descarta el bar cuando la sonda disco#info terminó y confirmó que NO
+  // es un agente. Si está en vuelo (loading/unknown) o falló, se muestra igual
+  // para no perder feedback de estado mientras tanto.
+  const knownNotAgent = caps.status === 'ready' && !isAgent;
   const agent = useAgentState(jid);
   const contact = useContact(jid);
   const online = useConnectionState() === 'online';
@@ -60,13 +73,14 @@ function AgentBarInner({ jid }: { jid: string }) {
   const [commands, setCommands] = useState<MindCommand[]>([]);
 
   // Los eventos PEP sólo llegan cuando el agente publica: pedir el valor actual
-  // al enfocar y al (re)conectar (ver AGENTS.md).
+  // al enfocar y al (re)conectar (ver AGENTS.md). Se pide salvo que la sonda
+  // haya confirmado que no es un agente.
   useFocusEffect(useCallback(() => {
-    if (online) { XmppService.fetchAgentTelemetry(jid); void fetchFleet(); }
-  }, [jid, online]));
+    if (online && !knownNotAgent) { XmppService.fetchAgentTelemetry(jid); void fetchFleet(); }
+  }, [jid, online, knownNotAgent]));
 
   useEffect(() => {
-    if (!open || !online) return;
+    if (!open || !online || !isAgent) return;
     let cancelled = false;
     XmppService.listAdhocCommands(jid)
       .then((list) => {
@@ -79,13 +93,34 @@ function AgentBarInner({ jid }: { jid: string }) {
       })
       .catch(() => { if (!cancelled) setCommands([]); });
     return () => { cancelled = true; };
-  }, [jid, open, online]);
+  }, [jid, open, online, isAgent]);
 
-  const onCommand = useCallback((node: string) => {
-    XmppService.runAdhocCommand(jid, node)
-      .then((result) => notify(result || `Comando ejecutado: ${node}`))
-      .catch((err) => notify(String(err)));
+  const onCommand = useCallback(async (node: string) => {
+    try {
+      const begin = await beginAdhocCommand(jid, node);
+      if (begin.status === 'completed') {
+        notify(begin.result.text || `Comando ejecutado: ${node}`);
+        return;
+      }
+      setPendingForm({ jid, node, sessionid: begin.sessionid, name: begin.name, form: begin.form });
+    } catch (err) {
+      notify(String(err));
+    }
   }, [jid]);
+
+  const handleFormSubmit = useCallback(async (submitForm: DataForm) => {
+    if (!pendingForm) return;
+    setSubmitting(true);
+    try {
+      const result = await submitAdhocCommand(pendingForm.jid, pendingForm.node, pendingForm.sessionid, submitForm);
+      setPendingForm(null);
+      notify(result.text || 'Comando ejecutado');
+    } catch (err) {
+      notify(String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [pendingForm]);
 
   const t = agent?.telemetry ?? undefined;
   const used = t?.context.used;
@@ -94,6 +129,8 @@ function AgentBarInner({ jid }: { jid: string }) {
   const barColor = pct === undefined ? Colors.primary : pct > 90 ? Colors.error : pct > 75 ? Colors.warning : Colors.success;
   const timeline = useMemo(() => agent?.timeline ?? [], [agent?.timeline]);
 
+  if (knownNotAgent) return null;
+
   return (
     <View style={styles.bar}>
       <Pressable style={styles.strip} onPress={() => setOpen((v) => !v)} accessibilityRole="button">
@@ -101,7 +138,7 @@ function AgentBarInner({ jid }: { jid: string }) {
         <Text style={styles.model} numberOfLines={1}>{t?.model?.split('/').pop() ?? contact?.status ?? ''}</Text>
         <View style={styles.spacer} />
         {brain ? (
-          <Pressable onPress={() => Linking.openURL(brain)} accessibilityRole="link" accessibilityLabel="Abrir el cerebro del agente" hitSlop={8}>
+          <Pressable onPress={() => openExternalUrl(brain)} accessibilityRole="link" accessibilityLabel="Abrir el cerebro del agente" hitSlop={8}>
             <MaterialCommunityIcons name="brain" size={18} color={Colors.primary} />
           </Pressable>
         ) : null}
@@ -128,6 +165,16 @@ function AgentBarInner({ jid }: { jid: string }) {
           />
           <ElevatedSwitch jid={jid} online={online} />
         </View>
+      ) : null}
+      {pendingForm ? (
+        <CommandFormDialog
+          visible
+          title={pendingForm.form.title ?? pendingForm.name}
+          form={pendingForm.form}
+          busy={submitting}
+          onSubmit={handleFormSubmit}
+          onCancel={() => setPendingForm(null)}
+        />
       ) : null}
     </View>
   );

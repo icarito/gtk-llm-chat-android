@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, Animated, Linking, StyleSheet, Text, Vibration, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Linking, Platform, Pressable, StyleSheet, Text, Vibration, View, type TextInputKeyPressEventData } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   AssistantRuntimeProvider,
@@ -12,7 +12,6 @@ import {
   type AppendMessage,
   type AttachmentAdapter,
   type QuoteInfo,
-  type ThreadMessage,
 } from '@assistant-ui/react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
@@ -21,6 +20,8 @@ import { XmppService } from '@/xmpp/XmppService';
 import { RECORDING_MIME } from '@/xmpp/audioUtils';
 import { chooseAttachment, type Picked } from './attachPicker';
 import { SuggestionBar } from './SuggestionBar';
+import { toThreadMessageLike } from './messageBridge';
+import type { ChatMessage } from './toIMessage';
 
 export type ReplyTo = { id: string; jid: string; quotedText: string };
 
@@ -33,6 +34,8 @@ type Ctx = {
   notify: (message: string) => void;
   /** Reinicia el estado XEP-0085 al enviar. */
   composingAt: MutableRefObject<number>;
+  /** Envía el borrador actual del composer (texto + adjuntos + cita) por XMPP. */
+  sendComposer: () => Promise<void>;
 };
 const ComposerCtx = createContext<Ctx | null>(null);
 const useCtx = () => {
@@ -69,56 +72,112 @@ const attachmentAdapter: AttachmentAdapter = {
   async remove() {},
 };
 
-async function upload(c: Ctx, uri: string, name: string, mime: string) {
+async function upload(c: { jid: string; type: 'chat' | 'groupchat' }, uri: string, name: string, mime: string) {
   const blob = await (await fetch(uri)).blob();
   await XmppService.sendFile(c.jid, blob, name, mime, c.type);
 }
 
-/** Runtime aui por conversación; ChatPane lo monta alrededor de <Chat>. */
-export function ComposerProvider({ children, quoteRef, ...ctx }: Omit<Ctx, 'composingAt'> & { quoteRef: MutableRefObject<((q: QuoteInfo) => void) | null>; children: ReactNode }) {
+/** Expone el runtime aui y el envío manual a las vistas del chat. */
+export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onLoadEarlier, isLoading, ...ctx }: Omit<Ctx, 'composingAt' | 'sendComposer'> & {
+  quoteRef: MutableRefObject<((q: QuoteInfo) => void) | null>;
+  messages: readonly ChatMessage[];
+  hasEarlier?: boolean;
+  onLoadEarlier?: () => Promise<void>;
+  isLoading?: boolean;
+  children: ReactNode;
+}) {
   const composingAt = useRef(0);
-  const value = useMemo<Ctx>(
+  const auiRef = useRef<ReturnType<typeof useAui> | null>(null);
+
+  const base = useMemo<Omit<Ctx, 'sendComposer'>>(
     () => ({ ...ctx, composingAt }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ctx.jid, ctx.type, ctx.online, ctx.resolveReply, ctx.notify],
   );
 
   const onNew = useCallback(async (m: AppendMessage) => {
-    value.composingAt.current = 0;
-    if (XmppService.getState() !== 'online') { value.notify('Sin conexión — no se pudo enviar'); return; }
+    base.composingAt.current = 0;
+    if (XmppService.getState() !== 'online') { base.notify('Sin conexión — no se pudo enviar'); return; }
     const text = m.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('').trim();
     const quote = (m.metadata.custom as { quote?: QuoteInfo }).quote;
     for (const a of m.attachments ?? []) {
       for (const p of a.content) {
         if (p.type !== 'file') continue;
-        try { await upload(value, p.data, p.filename ?? a.name, p.mimeType); }
+        try { await upload(base, p.data, p.filename ?? a.name, p.mimeType); }
         catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
       }
     }
     if (!text) return;
     try {
-      const replyTo = quote ? value.resolveReply(quote) : undefined;
-      await XmppService.sendMessage(value.jid, text, value.type, replyTo ? { replyTo } : {});
+      const replyTo = quote ? base.resolveReply(quote) : undefined;
+      await XmppService.sendMessage(base.jid, text, base.type, replyTo ? { replyTo } : {});
     } catch (e) {
-      value.notify(e instanceof Error ? e.message : String(e));
+      base.notify(e instanceof Error ? e.message : String(e));
     }
-  }, [value]);
+  }, [base]);
 
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [],
-    isRunning: false,
+  // Envío manual: evita el append optimista del runtime (que duplicaría el
+  // mensaje con el "pending" que ya aporta el store XMPP). Lee el estado del
+  // composer y repite la lógica de onNew.
+  const sendComposer = useCallback(async () => {
+    const aui = auiRef.current;
+    if (!aui) return;
+    const st = aui.composer.getState();
+    const text = st.text.trim();
+    const quote = st.quote;
+    const attachments = st.attachments;
+    if (!text && attachments.length === 0) return;
+    if (XmppService.getState() !== 'online') { base.notify('Sin conexión — no se pudo enviar'); return; }
+    for (const a of attachments) {
+      const file = (a as unknown as { file?: PickedFile }).file;
+      const uri = file?.uri;
+      if (!uri) continue;
+      const name = file?.name ?? a.name ?? 'adjunto';
+      const mime = file?.mime ?? a.contentType ?? 'application/octet-stream';
+      try { await upload(base, uri, name, mime); }
+      catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
+    }
+    if (!text) { await aui.composer.reset(); return; }
+    try {
+      const replyTo = quote ? base.resolveReply(quote) : undefined;
+      await XmppService.sendMessage(base.jid, text, base.type, replyTo ? { replyTo } : {});
+      await aui.composer.reset();
+    } catch (e) {
+      base.notify(e instanceof Error ? e.message : String(e));
+    }
+  }, [base]);
+
+  const value = useMemo<Ctx>(() => ({ ...base, sendComposer }), [base, sendComposer]);
+
+  const runtime = useExternalStoreRuntime<ChatMessage>({
+    messages,
+    convertMessage: toThreadMessageLike,
     isDisabled: !ctx.online,
+    hasEarlier,
+    onLoadEarlier,
+    isLoading,
     onNew,
     adapters: { attachments: attachmentAdapter },
   });
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ComposerCtx.Provider value={value}>
+        <AuiBridge auiRef={auiRef} />
         <QuoteBridge quoteRef={quoteRef} />
         {children}
       </ComposerCtx.Provider>
     </AssistantRuntimeProvider>
   );
+}
+
+/** Cenamos la referencia al runtime aui para sendComposer (no se puede llamar useAui aquí). */
+function AuiBridge({ auiRef }: { auiRef: MutableRefObject<ReturnType<typeof useAui> | null> }) {
+  const aui = useAui();
+  useEffect(() => {
+    auiRef.current = aui;
+    return () => { auiRef.current = null; };
+  }, [aui, auiRef]);
+  return null;
 }
 
 /** Expone setQuote a ChatPane (menú "Responder" / deslizar) sin suscribirse al texto. */
@@ -350,20 +409,34 @@ function InputOrRecording() {
 
 function SendOrMic() {
   const empty = useAuiState((s) => s.composer.isEmpty);
+  const { sendComposer } = useCtx();
   return empty ? <MicButton /> : (
-    <ComposerPrimitive.Send accessibilityLabel="Enviar" style={[styles.round, styles.send]}>
+    <Pressable
+      style={[styles.round, styles.send]}
+      onPress={() => { void sendComposer(); }}
+      accessibilityRole="button"
+      accessibilityLabel="Enviar"
+    >
       <Ionicons name="arrow-up" size={20} color={Colors.background} />
-    </ComposerPrimitive.Send>
+    </Pressable>
   );
 }
 
 function Input() {
-  const { online } = useCtx();
+  const { online, sendComposer } = useCtx();
   return (
     <ComposerPrimitive.Input
       submitMode="none"
       multiline
       editable={online}
+      onKeyPress={(e) => {
+        if (Platform.OS !== 'web') return;
+        const ne = e.nativeEvent as TextInputKeyPressEventData & { shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
+        if (ne.key === 'Enter' && !ne.shiftKey && !ne.isComposing && ne.keyCode !== 229) {
+          (e as unknown as { preventDefault?: () => void }).preventDefault?.();
+          void sendComposer();
+        }
+      }}
       placeholder={online ? 'Escribe un mensaje…' : 'Sin conexión'}
       placeholderTextColor={Colors.textDim}
       style={styles.input}

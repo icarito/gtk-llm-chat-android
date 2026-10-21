@@ -1,58 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform, StyleSheet, Text, ToastAndroid, View } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
+import type { FlatList, NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
+import type { ThreadMessage } from '@assistant-ui/core';
 import { useFocusEffect } from 'expo-router';
-import {
-  Chat,
-  type MessageMenuItem,
-  type PartialChatTheme,
-  type User,
-} from '@kesha-antonov/react-native-chat';
+import { ThreadPrimitive, type MessageState } from '@assistant-ui/react-native';
 import { Colors } from '@/constants/theme';
 import type { XmppMessage } from '@/types/xmpp';
 import { useConversation } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import type { QuoteInfo } from '@assistant-ui/react-native';
-import { ComposerProvider, renderComposerToolbar } from './Composer';
-import { renderMessageAudio } from './AudioBubble';
+import { ComposerProvider, ComposerToolbar } from './Composer';
 import { PendingFooter, StatusBanner, TypingFooter } from './Footers';
-import { makeRenderCustomView } from './MessageExtras';
+import { MessageBubble } from './MessageBubble';
 import { mergeMessages } from './mergeMessages';
-import { renderMessageText } from './richText';
+import { decideScrollAnchor, isAtBottom, type ScrollMemoryEntry } from './scrollAnchor';
 import { useConnectionState, useRoomNick } from './stores';
-import { ME, toIMessage, type ChatMessage } from './toIMessage';
+import { toIMessage, type ChatMessage } from './toIMessage';
 import { approvalTransportNotice } from './transportNotice';
 import { useHistory } from './useHistory';
-
-// Todo lo que viaja a la lib como prop se reenvía a CADA fila, y la fila se
-// salta el render sólo si todas esas props conservan su referencia: por eso
-// las constantes viven a nivel de módulo y lo demás en useMemo/useCallback.
-
-const DARK_THEME: PartialChatTheme = {
-  colors: {
-    accent: Colors.primary,
-    background: Colors.background,
-    incomingBubble: Colors.assistantBubble,
-    outgoingBubble: Colors.userBubble,
-    incomingText: Colors.text,
-    outgoingText: Colors.userBubbleText,
-    incomingMeta: Colors.textDim,
-    inputBackground: Colors.inputBackground,
-    inputBarBackground: Colors.surface,
-    inputText: Colors.text,
-    placeholder: Colors.textDim,
-    surface: Colors.surface,
-    separator: Colors.surfaceBorder,
-    error: Colors.error,
-  },
-};
-const MESSAGE_TEXT_PROPS = { markdown: true } as const;
-const LIST_PROPS = { keyboardShouldPersistTaps: 'handled' as const };
-// FlashList v2 no soporta `inverted` (la lib se lo pasa y lo ignora): el chat
-// quedaba al revés, lo nuevo arriba. FlatList invertida, ya ajustada por la lib.
-const USE_FLASH_LIST = false;
-
-const renderUsername = (user: User) => (user.name ? <Text style={styles.username}>{user.name}</Text> : null);
 
 function notify(message: string) {
   if (Platform.OS === 'android') ToastAndroid.show(message, ToastAndroid.SHORT);
@@ -63,6 +28,13 @@ function bare(jid: string): string {
   return jid.split('/')[0] ?? jid;
 }
 
+/**
+ * Posición de scroll recordada por conversación. Al (re)entrar saltamos al
+ * final; si el usuario había subido, volvemos donde estaba. Vive fuera del
+ * componente porque debe sobrevivir al desmontaje de la pantalla.
+ */
+const scrollMemory = new Map<string, ScrollMemoryEntry>();
+
 function ChatPaneImpl({ jid }: { jid: string }) {
   const live = useConversation(jid);
   const online = useConnectionState() === 'online';
@@ -72,8 +44,57 @@ function ChatPaneImpl({ jid }: { jid: string }) {
 
   // Volver a enfocar re-dispara el catch-up de MAM (sin vaciar la lista).
   const [syncTick, setSyncTick] = useState(0);
-  useFocusEffect(useCallback(() => { setSyncTick((t) => t + 1); }, []));
-  const { history, rehydrating, syncing, loadingOlder, exhausted, loadOlder } = useHistory(jid, online, syncTick);
+  const listRef = useRef<FlatList<ThreadMessage> | null>(null);
+  // Destino del anclaje pendiente: se aplica UNA vez, cuando la lista ya tiene
+  // alto de contenido medido (> 0). null = nada pendiente.
+  const pendingAnchorRef = useRef<'bottom' | number | null>(null);
+
+  const anchorOnEnter = useCallback(() => {
+    const saved = scrollMemory.get(jid);
+    pendingAnchorRef.current = saved && !saved.atBottom ? saved.offset : 'bottom';
+  }, [jid]);
+
+  // Al (re)entrar a la conversación (foco) o al cambiar de jid en la misma
+  // pantalla: al final, o donde estábamos si habíamos subido.
+  useFocusEffect(useCallback(() => {
+    setSyncTick((t) => t + 1);
+    anchorOnEnter();
+  }, [anchorOnEnter]));
+  useEffect(() => { anchorOnEnter(); }, [anchorOnEnter]);
+
+  // Se aplica el anclaje con la altura ya medida. "al final" queda PEGAJOSO:
+  // se reaplica en cada cambio de tamaño mientras el usuario no arrastre, para
+  // que la lista aterrice al fondo aunque MAM/descifrado agreguen contenido
+  // después. Un offset recordado se aplica una sola vez.
+  const onContentSizeChange = useCallback((_width: number, height: number) => {
+    const target = pendingAnchorRef.current;
+    const list = listRef.current;
+    if (target === null || !list || height <= 0) return;
+    if (target === 'bottom') { list.scrollToEnd({ animated: false }); return; }
+    pendingAnchorRef.current = null;
+    const resolved = decideScrollAnchor(scrollMemory.get(jid), height);
+    if (resolved.kind === 'bottom') list.scrollToEnd({ animated: false });
+    else list.scrollToOffset({ offset: resolved.offset, animated: false });
+  }, [jid]);
+
+  // El usuario tomó el control: se cancela el anclaje. `onScrollBeginDrag` sólo
+  // se dispara con un arrastre real (no con el desplazamiento programático), a
+  // diferencia de inferirlo de la dirección del offset.
+  const onScrollBeginDrag = useCallback(() => { pendingAnchorRef.current = null; }, []);
+
+  // Registrar la posición para poder restaurarla al reentrar. Handlers de nivel
+  // lista, estables — ver AGENTS.md sobre las props del list.
+  const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    scrollMemory.set(jid, {
+      offset: contentOffset.y,
+      contentHeight: contentSize.height,
+      viewportHeight: layoutMeasurement.height,
+      atBottom: isAtBottom(contentOffset.y, contentSize.height, layoutMeasurement.height),
+    });
+  }, [jid]);
+
+  const { history, rehydrating, syncing, exhausted, loadOlder } = useHistory(jid, online, syncTick);
 
   // Ids con los que figuramos en las reacciones: JID bare, o sala/nick en MUC.
   const self = useMemo(() => {
@@ -91,7 +112,10 @@ function ChatPaneImpl({ jid }: { jid: string }) {
   );
   const mergedRef = useRef<XmppMessage[]>(merged);
   mergedRef.current = merged;
+  // mergeMessages devuelve newest-first (orden de la lista invertida anterior);
+  // la lista de assistant-ui no es invertida: hay que voltearla a oldest-first.
   const messages = useMemo(() => merged.map((m) => toIMessage(m, self)), [merged, self]);
+  const displayMessages = useMemo(() => Array.from(messages).reverse(), [messages]);
 
   // Avisos de transporte del gateway: toast en vez de burbuja.
   const toasted = useRef(new Set<string>());
@@ -125,85 +149,57 @@ function ChatPaneImpl({ jid }: { jid: string }) {
     XmppService.retryMessage(jid, id).catch(() => notify('Sin conexión — no se pudo reenviar'));
   }, [jid]);
 
-  const messageActions = useCallback((m: ChatMessage): MessageMenuItem[] => {
-    const items: MessageMenuItem[] = [];
-    if (!m.meta.retracted) {
-      items.push({ label: 'Responder', onPress: () => quote(m) });
-      items.push({ label: 'Copiar', onPress: () => { Clipboard.setStringAsync(m.text); } });
-    }
-    if (m.meta.mine && !m.meta.retracted) {
-      items.push({
-        label: 'Eliminar',
-        destructive: true,
-        onPress: () => Alert.alert('Eliminar mensaje', 'Se retractará para todos.', [
-          { text: 'Cancelar', style: 'cancel' },
-          { text: 'Eliminar', style: 'destructive', onPress: () => {
-            XmppService.retractMessage(jid, String(m._id)).catch((e) => notify(String(e)));
-          } },
-        ]),
-      });
-    }
-    return items;
-  }, [jid, quote]);
+  const renderRow = useCallback(({ message }: { message: MessageState }) => (
+    <MessageBubble
+      message={message}
+      jid={jid}
+      group={group}
+      onRetry={onRetry}
+      onQuote={quote}
+      notify={notify}
+    />
+  ), [jid, group, onRetry, quote]);
 
-  const reactions = useMemo(() => ({
-    isEnabled: true,
-    onReactionPress: (m: ChatMessage, emoji: string) => {
-      // XEP-0444 fija el conjunto COMPLETO de nuestras reacciones: alternar `emoji` en él.
-      const mine = (m.reactions ?? []).filter((r) => r.userIds.includes(ME._id)).map((r) => r.emoji);
-      const next = mine.includes(emoji) ? mine.filter((e) => e !== emoji) : [...mine, emoji];
-      XmppService.react(jid, String(m._id), next).catch((e) => notify(String(e)));
-    },
-  }), [jid]);
-
-  // ── props estables hacia la lib ──
-  const replyProps = useMemo(() => ({ swipe: { isEnabled: true, direction: 'right' as const, onSwipe: quote } }), [quote]);
-  const renderCustomView = useMemo(() => makeRenderCustomView(jid, onRetry), [jid, onRetry]);
-  const renderFooter = useCallback(() => <TypingFooter jid={jid} />, [jid]);
-  const renderChatFooter = useCallback(() => <PendingFooter jid={jid} />, [jid]);
-  const hasMessages = messages.length > 0;
-  const loadEarlierMessagesProps = useMemo(() => ({
-    isAvailable: !exhausted && hasMessages,
-    onPress: loadOlder,
-    isLoading: loadingOlder,
-    isInfiniteScrollEnabled: true,
-    label: 'Cargar mensajes anteriores',
-  }), [exhausted, hasMessages, loadOlder, loadingOlder]);
+  const hasMessages = displayMessages.length > 0;
 
   return (
-    <View style={styles.root}>
-      {!online ? <StatusBanner text="Sin conexión — los mensajes se envían al reconectar" /> : null}
-      {rehydrating || syncing ? <StatusBanner busy text={rehydrating ? 'Rehidratando historial' : 'Sincronizando MAM'} /> : null}
-      <ComposerProvider jid={jid} type={type} online={online} resolveReply={resolveReply} notify={notify} quoteRef={quoteRef}>
-      <Chat<ChatMessage>
-        messages={messages}
-        user={ME}
-        locale="es"
-        colorScheme="dark"
-        darkTheme={DARK_THEME}
-        isUsernameVisible={group}
-        renderUsername={renderUsername}
-        renderAvatar={null}
-        messageTextProps={MESSAGE_TEXT_PROPS}
-        renderMessageText={renderMessageText}
-        renderMessageAudio={renderMessageAudio}
-        renderCustomView={renderCustomView}
-        isCustomViewBottom
-        reply={replyProps}
-        reactions={reactions}
-        messageActions={messageActions}
-        renderInputToolbar={renderComposerToolbar}
-        renderFooter={renderFooter}
-        renderChatFooter={renderChatFooter}
-        loadEarlierMessagesProps={loadEarlierMessagesProps}
-        isFlashListEnabled={USE_FLASH_LIST}
-        listProps={LIST_PROPS}
-        enableGestureHandlerRootView={false}
-        isScrollToBottomEnabled
-        renderChatEmpty={renderEmpty}
-      />
-      </ComposerProvider>
-    </View>
+    <ComposerProvider
+      jid={jid}
+      type={type}
+      online={online}
+      resolveReply={resolveReply}
+      notify={notify}
+      quoteRef={quoteRef}
+      messages={displayMessages}
+      hasEarlier={!exhausted && hasMessages}
+      onLoadEarlier={loadOlder}
+      isLoading={rehydrating || syncing}
+    >
+      <View style={styles.root}>
+        {!online ? <StatusBanner text="Sin conexión — los mensajes se envían al reconectar" /> : null}
+        {rehydrating || syncing ? <StatusBanner busy text={rehydrating ? 'Rehidratando historial' : 'Sincronizando MAM'} /> : null}
+        <ThreadPrimitive.MessagesFlatList
+          ref={listRef}
+          style={styles.list}
+          contentContainerStyle={hasMessages ? undefined : styles.emptyContent}
+          keyboardShouldPersistTaps="handled"
+          autoScroll
+          scrollToBottomOnInitialize
+          scrollEventThrottle={16}
+          onScroll={onScroll}
+          onScrollBeginDrag={onScrollBeginDrag}
+          onContentSizeChange={onContentSizeChange}
+          ListEmptyComponent={renderEmpty}
+        >
+          {renderRow}
+        </ThreadPrimitive.MessagesFlatList>
+        <View style={styles.footer}>
+          <TypingFooter jid={jid} />
+          <PendingFooter jid={jid} />
+        </View>
+        <ComposerToolbar />
+      </View>
+    </ComposerProvider>
   );
 }
 
@@ -217,10 +213,10 @@ function renderEmpty() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
-  username: { color: Colors.primary, fontSize: 12, fontWeight: '600' },
-  // La lista invertida también voltea el ListEmptyComponent: se contra-invierte con la
-  // misma regla que VirtualizedList (Android scale -1 en ambos ejes, iOS sólo scaleY).
-  empty: { padding: 24, alignItems: 'center', transform: Platform.OS === 'android' ? [{ scale: -1 }] : [{ scaleY: -1 }] },
+  list: { flex: 1 },
+  emptyContent: { flexGrow: 1, justifyContent: 'center' },
+  footer: { backgroundColor: Colors.surface },
+  empty: { padding: 24, alignItems: 'center' },
   emptyText: { color: Colors.textDim },
 });
 

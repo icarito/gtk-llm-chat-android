@@ -1,4 +1,5 @@
 import React from 'react';
+import { Linking } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { MindPanel, type MindCommand } from '@/components/agent/MindPanel';
 import { AgentActivityIndicator } from '@/components/agent/AgentActivityIndicator';
@@ -19,6 +20,16 @@ const tel: AgentTelemetry = {
 };
 
 describe('MindPanel', () => {
+  it('opens the brain URL through the platform link handler', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    const url = 'https://example.invalid/brain?view=memory#notes';
+    const { getByText } = render(
+      <MindPanel pendingApprovals={0} timeline={[]} commands={[]} onCommand={() => {}} brainUrl={url} />,
+    );
+    fireEvent.press(getByText('Abrir el cerebro del agente'));
+    expect(open).toHaveBeenCalledWith(url);
+    open.mockRestore();
+  });
   it('is honest about missing cost and tool', () => {
     const { getByText } = render(
       <MindPanel telemetry={tel} pendingApprovals={0} timeline={[]} commands={commands} onCommand={() => {}} />,

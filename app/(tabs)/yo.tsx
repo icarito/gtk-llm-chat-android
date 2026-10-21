@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/constants/theme';
@@ -39,6 +39,7 @@ export default function YoScreen() {
 
   const onAvatar = useCallback(() => {
     if (!online) { Alert.alert('Sin conexión', 'Conéctate para cambiar tu foto de perfil.'); return; }
+    if (Platform.OS === 'web') { void change('gallery'); return; }
     Alert.alert('Foto de perfil', undefined, [
       { text: 'Cámara', onPress: () => { void change('camera'); } },
       { text: 'Galería', onPress: () => { void change('gallery'); } },

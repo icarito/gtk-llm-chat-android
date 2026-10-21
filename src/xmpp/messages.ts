@@ -162,10 +162,6 @@ export async function sendMessage(
   type: 'chat' | 'groupchat' = 'chat',
   opts: { replyTo?: ReplyRef } = {},
 ): Promise<string> {
-  const client = usableClient();
-  if (!client) {
-    throw new Error('XMPP not connected');
-  }
   const id = `nc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const timestamp = new Date().toISOString();
 
@@ -179,6 +175,9 @@ export async function sendMessage(
     : undefined;
   const senderNick = type === 'groupchat' ? rooms.get(to)?.nick : undefined;
 
+  // Optimista SIEMPRE primero: el mensaje debe aparecer al instante en la lista,
+  // aunque la conexión esté cayendo (el auto-retry pone xmppClient a null). Si
+  // no hay cliente, se marca 'failed' y se lanza; la burbuja ya está visible.
   addMessageToMap({
     id,
     from: session.account?.jid ?? '',
@@ -193,6 +192,11 @@ export async function sendMessage(
     senderNick,
   });
   const extra = historyExtra({ replyTo, senderNick } as XmppMessage);
+  const client = usableClient();
+  if (!client) {
+    updateOutboundSendState(to, id, 'failed');
+    throw new Error('XMPP not connected');
+  }
 
   try {
     const enc = await encryptOutbound(to, id, body, type);

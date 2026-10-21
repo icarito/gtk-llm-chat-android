@@ -1,6 +1,6 @@
 import { xml } from '@xmpp/client';
 import type { Element } from '@xmpp/xml';
-import type { DataForm, FormField } from '@/types/xmpp';
+import type { DataForm, FormField, FormType } from '@/types/xmpp';
 
 const FORM_NS = 'jabber:x:data';
 
@@ -55,6 +55,48 @@ export function buildRequestForm(title: string, instructions: string[], fields: 
 
 export function buildResultForm(title: string, fields: FormField[]): Element {
   return buildFormElement({ type: 'result', title, fields });
+}
+
+/** Parsea un `<x type="form|result">` a `DataForm` con los metadatos de cada campo. */
+export function parseForm(xElement: Element): DataForm {
+  const fields: FormField[] = [];
+  for (const fieldEl of xElement.getChildren('field')) {
+    const varName = fieldEl.attrs.var as string | undefined;
+    if (!varName) continue;
+    const values = fieldEl.getChildren('value').map((v) => v.text());
+    const options = fieldEl.getChildren('option').map((o) => ({
+      label: o.attrs.label as string,
+      value: o.getChild('value')?.text() ?? '',
+    }));
+    const field: FormField = {
+      var: varName,
+      type: fieldEl.attrs.type as FormField['type'] | undefined,
+      label: fieldEl.attrs.label as string | undefined,
+      desc: fieldEl.getChild('desc')?.text(),
+      required: Boolean(fieldEl.getChild('required')),
+    };
+    if (values.length === 1) field.value = values[0];
+    else if (values.length > 1) field.value = values;
+    if (options.length > 0) field.options = options;
+    fields.push(field);
+  }
+  return {
+    type: (xElement.attrs.type as FormType | undefined) ?? 'form',
+    title: xElement.getChild('title')?.text(),
+    instructions: xElement.getChildren('instructions').map((i) => i.text()),
+    fields,
+  };
+}
+
+/** Construye el form de submit a partir de uno recibido y los valores recolectados. */
+export function buildSubmitForm(form: DataForm, values: Record<string, string>): DataForm {
+  const fields: FormField[] = [];
+  for (const field of form.fields) {
+    if (field.type === 'fixed') continue;
+    const raw = values[field.var] ?? (Array.isArray(field.value) ? field.value.join('\n') : field.value) ?? '';
+    fields.push({ var: field.var, type: field.type, value: raw });
+  }
+  return { type: 'submit', fields };
 }
 
 export function parseSubmitForm(xElement: Element): Record<string, string> {

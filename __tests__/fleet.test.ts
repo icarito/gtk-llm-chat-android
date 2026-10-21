@@ -24,4 +24,36 @@ describe('fleet snapshot', () => {
   });
   it('namespace ajeno: snapshot vacío', () =>
     expect(parseFleetSnapshot(item('<instance jid="a"/>', 'urn:other')).entities).toEqual([]));
+
+  const generated = (gen: string, inner = '') =>
+    parse(`<item id="1"><monitoring xmlns="${NS}" generated-at="${gen}">${inner}</monitoring></item>`);
+
+  it('parsea metrics, operational, status y genera cost/operations', () => {
+    const snap = parseFleetSnapshot(generated('x',
+      '<instance id="a" jid="x@o.org" entity-kind="worker" lifecycle="hibernated">' +
+      '<metrics><metric name="cost" value="12.50" currency="USD"/><metric name="cpu" value="40"/></metrics>' +
+      '<operational><field name="turn" value="3"/><field name="mode">chat</field></operational>' +
+      '</instance>'));
+    expect(snap.generatedAt).toBe('x');
+    expect(snap.stale).toBe(false);
+    expect(snap.entities).toHaveLength(1);
+    const e = snap.entities[0];
+    expect(e.metrics).toHaveLength(2);
+    expect(e.operational).toEqual({ turn: '3', mode: 'chat' });
+    expect(e.status).toBe('hibernated');
+    expect(snap.cost).toHaveLength(1);
+    expect(snap.cost[0]).toMatchObject({ name: 'cost', value: '12.50', currency: 'USD', instance: 'a' });
+    expect(snap.operations).toHaveLength(1);
+    expect(snap.operations[0]).toMatchObject({ instance: 'a', 'entity-kind': 'worker', fields: { turn: '3', mode: 'chat' } });
+  });
+
+  it('marca stale por timestamp viejo (epoch) y no por vacío', () => {
+    expect(parseFleetSnapshot(generated('1600000000')).stale).toBe(true);
+    expect(parseFleetSnapshot(generated('')).stale).toBe(false);
+  });
+
+  it('stale declarado gana', () => {
+    const root = parse(`<item id="1"><monitoring xmlns="${NS}" stale="true"><instance id="a"/></monitoring></item>`);
+    expect(parseFleetSnapshot(root).stale).toBe(true);
+  });
 });

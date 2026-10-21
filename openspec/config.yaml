@@ -1,8 +1,9 @@
 schema: spec-driven
 
 context: |
-  Android XMPP client built with Expo SDK 52, React Native 0.76, Expo Router 4
-  and strict TypeScript. The versioned `android/` tree contains the native
-  foreground-service module and must not be regenerated wholesale. Follow every
-  trap in AGENTS.md. New work uses `openspec/changes/` and must pass `make check`.
+  XMPP client built with Expo SDK 57, React Native 0.86, React 19, Expo Router 57
+  and strict TypeScript. Android/iOS use CNG; native customizations live in
+  modules/ and plugins/. Linux uses the shared web frontend in Tauri. OMEMO 2
+  is a pure TypeScript core; legacy OMEMO is Android-only. Follow AGENTS.md.
+  New work uses `openspec/changes/` and must pass `make check`.
 

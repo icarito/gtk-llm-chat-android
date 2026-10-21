@@ -38,3 +38,7 @@ expo-env.d.ts
 # CNG: android/ e ios/ se regeneran con `npx expo prebuild`
 /android
 /ios
+
+# Tauri build output
+src-tauri/target/
+src-tauri/gen/

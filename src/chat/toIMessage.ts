@@ -1,9 +1,39 @@
-import type { IMessage, MessageReaction, ReplyMessage, User } from '@kesha-antonov/react-native-chat';
 import type { XmppMessage } from '@/types/xmpp';
 import { displayName } from '@/xmpp/presence';
 import { parseAttachment } from './attachments';
 
-/** Usuario local: la lib decide el lado de la burbuja comparando `user._id`. */
+/** Tipos mínimos locales (antes venían de react-native-chat). */
+export interface User {
+  _id: string;
+  name?: string;
+}
+
+export interface MessageReaction {
+  emoji: string;
+  userIds: string[];
+}
+
+export interface ReplyMessage {
+  _id: string;
+  text: string;
+  user: User;
+}
+
+interface IMessageLike {
+  _id: string;
+  text: string;
+  createdAt: number;
+  user: User;
+  image?: string;
+  audio?: string;
+  duration?: number;
+  pending?: boolean;
+  sent?: boolean;
+  reactions?: MessageReaction[];
+  replyMessage?: ReplyMessage;
+}
+
+/** Usuario local: nosotros decidimos el lado de la burbuja comparando `meta.mine`. */
 export const ME: User = { _id: 'me' };
 
 export const RETRACTED_TEXT = '_mensaje eliminado_';
@@ -30,7 +60,7 @@ export interface MessageMeta {
   extras: boolean;
 }
 
-export interface ChatMessage extends IMessage {
+export interface ChatMessage extends IMessageLike {
   meta: MessageMeta;
 }
 

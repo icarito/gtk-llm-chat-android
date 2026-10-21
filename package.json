@@ -1,6 +1,6 @@
 {
   "name": "gtk-llm-chat-android",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "main": "./index.js",
   "scripts": {
     "start": "expo start",
@@ -16,7 +16,10 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "build:web": "expo export --platform web",
+    "linux:dev": "tauri dev",
+    "linux:build": "tauri build --no-bundle"
   },
   "dependencies": {
     "@assistant-ui/react-native": "^0.1.48",
@@ -27,6 +30,9 @@
     "@noble/hashes": "^1.8.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/flash-list": "2.0.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "@tauri-apps/plugin-sql": "^2.6.0",
     "@xmpp/client": "^0.14.0",
     "@xmpp/connection": "^0.14.0",
     "@xmpp/debug": "^0.14.0",
@@ -77,6 +83,7 @@
     "@expo/config-plugins": "~57.0.10",
     "@react-native-community/cli": "^20.2.0",
     "@react-native/jest-preset": "^0.86.3",
+    "@tauri-apps/cli": "^2.12.3",
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^29.5.14",
     "@types/react": "~19.2.4",

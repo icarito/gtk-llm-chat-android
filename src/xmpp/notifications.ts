@@ -97,6 +97,7 @@ export async function setupNotifications(): Promise<NotificationSetupResult> {
 }
 
 export async function getStoredExpoPushToken(): Promise<string | null> {
+  if (Platform.OS === 'web') return null;
   return AsyncStorage.getItem(PUSH_TOKEN_KEY);
 }
 
@@ -172,6 +173,7 @@ export function updateContactNameCache(contacts: { jid: string; name?: string }[
 const STALE_NOTIFICATION_MAX_AGE_MS = 60 * 60 * 1000;
 
 export async function dismissStaleNotifications(): Promise<void> {
+  if (Platform.OS === 'web') return;
   const presented = await Notifications.getPresentedNotificationsAsync();
   const now = Date.now();
   await Promise.all(
@@ -194,6 +196,7 @@ export async function dismissStaleNotifications(): Promise<void> {
  * nada pendiente.
  */
 export async function dismissNotificationForJid(jid: string): Promise<void> {
+  if (Platform.OS === 'web') return;
   const target = bareJid(jid);
   const presented = await Notifications.getPresentedNotificationsAsync();
   await Promise.all(
@@ -256,6 +259,7 @@ export function setConnected() {
 
 // Show notification for incoming XMPP message
 export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
+  if (Platform.OS === 'web') return;
   if (isXmppNotificationNoise(msg)) return;
   // Tras reconectar, el servidor vuelca carbons y mensajes pendientes que
   // no son realmente nuevos. Una ventana de gracia evita la cascada de

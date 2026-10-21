@@ -3,6 +3,7 @@
  * device list de OMEMO. Los nuevos parsers PEP viven en src/xmpp/pep/.
  */
 import { xml } from '@xmpp/client';
+import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
@@ -53,8 +54,8 @@ export async function fetchAvatarData(bare: string, sha: string): Promise<void> 
     avatarHashes.set(bare, sha);
     const dir = `${FileSystem.cacheDirectory}avatars/`;
     const path = `${dir}${sha}.img`;
-    const existing = await FileSystem.getInfoAsync(path);
-    if (existing.exists) {
+    const existing = Platform.OS === 'web' ? null : await FileSystem.getInfoAsync(path);
+    if (existing?.exists) {
       if (avatarHashes.get(bare) !== sha) return;
       avatarUris.set(bare, path);
       notifyAvatars(bare);
@@ -77,6 +78,12 @@ export async function fetchAvatarData(bare: string, sha: string): Promise<void> 
       .find((text?: string) => Boolean(text));
     if (!base64) return;
     if (avatarHashes.get(bare) !== sha) return;
+
+    if (Platform.OS === 'web') {
+      avatarUris.set(bare, `data:image/png;base64,${base64}`);
+      notifyAvatars(bare);
+      return;
+    }
 
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
     await FileSystem.writeAsStringAsync(path, base64, {

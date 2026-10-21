@@ -4,12 +4,10 @@ import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { clamp, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
-import { MessageText, type MessageTextProps } from '@kesha-antonov/react-native-chat';
 import { Colors } from '@/constants/theme';
 import { splitMarkdownTables, type MarkdownTable } from '@/xmpp/markdownTables';
 import type { ChatMessage } from './toIMessage';
-
-type Props = MessageTextProps<ChatMessage>;
+import { MarkdownInline } from './markdownInline';
 
 const CODE_FENCE_RE = /```([^\n`]*)\n?([\s\S]*?)```/g;
 
@@ -50,10 +48,6 @@ function MarkdownTableView({ table }: { table: MarkdownTable }) {
   ));
   const tableWidth = widths.reduce((sum, w) => sum + w + TABLE_CELL_CHROME, 0);
 
-  // Un ScrollView horizontal dentro de la lista invertida rompía la altura de
-  // la celda en Android (ver AGENTS.md): Pan + translateX en su lugar, con el
-  // viewport calculado (no medido: el contenedor no puede medirse a sí mismo
-  // cuando su único hijo fija su ancho natural).
   const { width: windowWidth } = useWindowDimensions();
   const viewportWidth = windowWidth * BUBBLE_WIDTH_FRACTION - BUBBLE_HORIZONTAL_PADDING;
   const translateX = useSharedValue(0);
@@ -115,12 +109,11 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   );
 }
 
-/** Texto con bloques ``` y tablas GFM; la prosa intermedia sigue pasando por el markdown de la lib. */
-function RichBodyImpl(props: Props) {
-  const { currentMessage } = props;
+/** Texto con bloques ``` y tablas GFM; la prosa intermedia baja por el renderer inline propio. */
+function RichBodyImpl({ message }: { message: ChatMessage }) {
   return (
     <View style={styles.body}>
-      {splitCodeFences(currentMessage.text).map((part, index) => {
+      {splitCodeFences(message.text).map((part, index) => {
         if (part.type === 'code') {
           return <CodeBlock key={`code-${index}`} code={part.value} language={part.language} />;
         }
@@ -129,10 +122,10 @@ function RichBodyImpl(props: Props) {
           block.type === 'table' ? (
             <MarkdownTableView key={`table-${index}-${blockIndex}`} table={block.value} />
           ) : (
-            <MessageText
+            <MarkdownInline
               key={`text-${index}-${blockIndex}`}
-              {...props}
-              currentMessage={{ ...currentMessage, text: block.value }}
+              text={block.value}
+              style={styles.prose}
             />
           )
         ));
@@ -144,18 +137,19 @@ function RichBodyImpl(props: Props) {
 // Se re-renderiza sólo si cambió el mensaje: el split/regex corre una vez por versión.
 const RichBody = memo(
   RichBodyImpl,
-  (a, b) => a.currentMessage === b.currentMessage && a.position === b.position,
+  (a, b) => a.message === b.message,
 );
 
 /**
- * renderMessageText de la lib. Ruta rápida: texto normal -> markdown nativo de
- * la lib. Sólo código/tablas usan RichBody; la salida de herramientas va en un
- * scroll vertical acotado.
+ * Cuerpo del mensaje. Ruta rápida: texto normal -> markdown inline propio
+ * (links abren con openExternalUrl). Sólo código/tablas usan RichBody; la
+ * salida de herramientas va en un scroll vertical acotado.
  */
-export function renderMessageText(props: Props) {
-  const { meta } = props.currentMessage;
-  const body = meta.rich ? <RichBody {...props} /> : <MessageText {...props} />;
-  if (!meta.tool) return body;
+export function MessageBody({ message }: { message: ChatMessage }) {
+  const body = message.meta.rich
+    ? <RichBody message={message} />
+    : <MarkdownInline text={message.text} style={styles.prose} />;
+  if (!message.meta.tool) return body;
   return (
     <ScrollView style={styles.toolScroll} nestedScrollEnabled showsVerticalScrollIndicator>
       {body}
@@ -165,6 +159,7 @@ export function renderMessageText(props: Props) {
 
 const styles = StyleSheet.create({
   body: { gap: 6 },
+  prose: { fontSize: 15, lineHeight: 22, color: Colors.text },
   toolScroll: { maxHeight: 180 },
   tableScroll: { alignSelf: 'flex-start', maxWidth: '100%', overflow: 'hidden' },
   table: { borderWidth: 1, borderColor: Colors.surfaceBorder, borderRadius: 6, overflow: 'hidden' },

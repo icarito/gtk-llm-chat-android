@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/theme';
+import { openExternalUrl } from '@/platform/openExternalUrl';
 import type { HookEvent } from '@/xmpp/pep/hooks';
 import { formatCost, formatTool, type AgentTelemetry } from '@/xmpp/pep/telemetry';
 
@@ -170,7 +171,7 @@ export function MindPanel({
       ) : null}
 
       {brainUrl ? (
-        <Pressable onPress={() => Linking.openURL(brainUrl)} accessibilityRole="link">
+        <Pressable onPress={() => openExternalUrl(brainUrl)} accessibilityRole="link">
           <Text style={styles.value}>Abrir el cerebro del agente</Text>
         </Pressable>
       ) : null}

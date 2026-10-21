@@ -1,10 +1,11 @@
 import { useCallback } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/constants/theme';
 import { AgentCard } from '@/components/nav/AgentCard';
 import { useAgentJids } from '@/components/nav/hooks';
+import { hasFleetSource } from '@/xmpp/fleet';
 
 export default function FlotaScreen() {
   const jids = useAgentJids();
@@ -13,10 +14,16 @@ export default function FlotaScreen() {
   const open = useCallback((jid: string) => {
     router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(jid) } } as never);
   }, [router]);
+  const openMonitor = useCallback(() => {
+    router.push({ pathname: '/fleet' } as never);
+  }, [router]);
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>Flota</Text>
+        <Pressable style={styles.monitorBtn} onPress={openMonitor} disabled={!hasFleetSource()} accessibilityRole="button">
+          <Text style={[styles.monitorText, !hasFleetSource() && styles.monitorDisabled]}>Monitor</Text>
+        </Pressable>
       </View>
       <FlatList
         data={jids as string[]}
@@ -35,8 +42,11 @@ export default function FlotaScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { paddingHorizontal: 16, paddingBottom: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
+  header: { paddingHorizontal: 16, paddingBottom: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { fontSize: 24, fontWeight: '700', color: Colors.text },
+  monitorBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#202A36', borderWidth: 1, borderColor: Colors.surfaceBorder },
+  monitorText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
+  monitorDisabled: { color: Colors.textDim },
   empty: { padding: 40, alignItems: 'center' },
   emptyText: { fontSize: 16, color: Colors.muted },
   emptySub: { fontSize: 13, color: Colors.textDim, marginTop: 8 },

@@ -5,7 +5,7 @@
  * same dedupe rules, same query surface. Own SQLite file; it is a cache of
  * the server-side MAM archive, never the source of truth.
  */
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from './historyDatabase';
 import { foldReactions } from '@/xmpp/xep/reactions';
 import type { XmppInlineCommand, XmppMessage, XmppQuickResponse } from '@/types/xmpp';
 
@@ -80,7 +80,7 @@ export interface HistoryPreviewRow extends HistoryRow {
   bare_jid: string;
 }
 
-let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let dbPromise: Promise<SQLite.HistoryDatabase> | null = null;
 /** La base se creó en esta ejecución (app recién instalada o datos borrados).
  *  Mientras dure, lo que llega es puesta al día y no debe notificar. */
 let freshInstall = false;
@@ -98,7 +98,7 @@ function isFreshInstallWindowActive(): boolean {
   return false;
 }
 
-function getDb(): Promise<SQLite.SQLiteDatabase> {
+function getDb(): Promise<SQLite.HistoryDatabase> {
   if (!dbPromise) {
     // Si open/migrate falla una vez, no dejar la promesa rota en caché para
     // siempre: cada llamada posterior volvería a fallar sin reintentar, y en
@@ -127,7 +127,7 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
   return dbPromise;
 }
 
-async function migrateMetadataColumns(db: SQLite.SQLiteDatabase): Promise<void> {
+async function migrateMetadataColumns(db: SQLite.HistoryDatabase): Promise<void> {
   const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(messages)');
   const names = new Set(columns.map((column) => column.name));
   if (!names.has('quick_responses')) {
@@ -275,7 +275,7 @@ function parseTs(value: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-async function cleanupMamShadowDuplicates(db: SQLite.SQLiteDatabase, windowSeconds = 30): Promise<void> {
+async function cleanupMamShadowDuplicates(db: SQLite.HistoryDatabase, windowSeconds = 30): Promise<void> {
   await db.runAsync(
     'DELETE FROM messages WHERE mam_id IS NULL AND EXISTS ('
       + 'SELECT 1 FROM messages archived '

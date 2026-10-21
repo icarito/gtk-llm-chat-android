@@ -57,8 +57,13 @@ async function startOmemo2WithRetry(jid: string, attempt = 0): Promise<void> {
 }
 
 export function initOmemoOnOnline(jid: string, client: Client, enabled: boolean) {
+  // OMEMO legacy es Android-only (módulo nativo). En el resto de plataformas
+  // (web/Tauri, iOS) no hay módulo nativo: se salta el init legacy sin error,
+  // y la cripto corre por OMEMO 2 (puente sqlite/keyring).
+  const legacySupported = Omemo.isSupported();
   if (enabled) {
     void startOmemo2WithRetry(jid);
+    if (!legacySupported) return;
     Omemo.init(jid, client, true)
       .then(async () => {
         await publishOwnOmemoIdentityWithRetry();
@@ -67,6 +72,7 @@ export function initOmemoOnOnline(jid: string, client: Client, enabled: boolean)
         console.error('[OMEMO] Failed to initialize OMEMO on online', err);
       });
   } else {
+    if (!legacySupported) return;
     Omemo.init(jid, client, false)
       .then(() => Omemo.removeOwnDevice())
       .catch((error) => console.error('[OMEMO] Failed to remove disabled device', error));

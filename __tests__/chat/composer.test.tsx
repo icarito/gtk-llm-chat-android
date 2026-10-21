@@ -36,7 +36,7 @@ const Row = memo(function Row({ toolbar }: { toolbar: () => React.ReactNode }) {
 function Harness({ quoteRef, resolveReply }: { quoteRef: React.MutableRefObject<((q: QuoteInfo) => void) | null>; resolveReply: jest.Mock }) {
   const notify = useRef(jest.fn()).current;
   return (
-    <ComposerProvider jid="a@b" type="chat" online resolveReply={resolveReply} notify={notify} quoteRef={quoteRef}>
+    <ComposerProvider jid="a@b" type="chat" online messages={[]} resolveReply={resolveReply} notify={notify} quoteRef={quoteRef}>
       <Row toolbar={renderComposerToolbar} />
       <Text>fin</Text>
     </ComposerProvider>

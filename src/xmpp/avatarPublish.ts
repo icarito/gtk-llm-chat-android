@@ -4,6 +4,7 @@
  * los bytes, publish-options con max_items 1 y acceso por presencia.
  */
 import { xml } from '@xmpp/client';
+import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { sha1 } from '@noble/hashes/sha1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -63,8 +64,10 @@ export async function publishAvatar(
   await client.iqCaller.request(
     buildPublishMetadata(`avatar-pub-meta-${tag}`, id, bytes.length, mime, width, height), 15000);
   // Misma caché por sha que fetchAvatarData: así la lee sin pedirla de nuevo.
-  const dir = `${FileSystem.cacheDirectory}avatars/`;
-  await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-  await FileSystem.writeAsStringAsync(`${dir}${id}.img`, base64, { encoding: FileSystem.EncodingType.Base64 });
+  if (Platform.OS !== 'web') {
+    const dir = `${FileSystem.cacheDirectory}avatars/`;
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+    await FileSystem.writeAsStringAsync(`${dir}${id}.img`, base64, { encoding: FileSystem.EncodingType.Base64 });
+  }
   await fetchAvatarData(bareJid, id);
 }

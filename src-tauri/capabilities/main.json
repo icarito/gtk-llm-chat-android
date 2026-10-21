@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local chat window with persistent SQLite history",
+  "windows": ["main"],
+  "permissions": [
+    "core:default", "sql:default", "sql:allow-execute",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
+}

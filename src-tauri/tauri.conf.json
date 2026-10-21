@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "gtk-llm-chat",
+  "version": "0.2.2",
+  "identifier": "org.fuentelibre.gtk-llm-chat-linux",
+  "build": {
+    "beforeDevCommand": "BROWSER=none npm run web -- --localhost --port 8082",
+    "devUrl": "http://localhost:8082",
+    "beforeBuildCommand": "npm run build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "gtk-llm-chat",
+      "width": 1000,
+      "height": 760,
+      "minWidth": 360,
+      "minHeight": 480,
+      "backgroundColor": "#0A0E14"
+    }],
+    "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: wss:; media-src 'self' blob: data: https:",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: wss: http://localhost:8082 ws://localhost:8082; media-src 'self' blob: data: https:"
+    }
+  },
+  "bundle": { "active": false, "icon": ["../assets/icon.png"] }
+}

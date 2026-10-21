@@ -2,11 +2,13 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { Alert, Modal, Pressable, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { Colors } from '@/constants/theme';
-import { useRoom } from '@/xmpp/XmppContext';
-import { ban, kick, setRole, setSubject } from '@/xmpp/moderation';
+import { useRoom, useXmpp } from '@/xmpp/XmppContext';
+import { ban, getRoomConfigForm, invite, kick, setAffiliation, setRole, setSubject, submitRoomConfig } from '@/xmpp/moderation';
 import { devicesLabel, groupOccupants, type OccupantGroup } from '@/xmpp/xep/occupants';
 import { roleWord } from '@/components/nav/rosterLogic';
-import type { MucRole } from '@/xmpp/xep/muc';
+import RoomConfigDialog from '@/components/room/RoomConfigDialog';
+import RoomInviteDialog from '@/components/room/RoomInviteDialog';
+import type { ConfigField, MucAffiliation, MucRole } from '@/xmpp/xep/muc';
 
 const fail = (e: unknown) => Alert.alert('Sala', String(e));
 
@@ -22,12 +24,17 @@ const Row = memo(function Row({ group, onLongPress }: { group: OccupantGroup; on
   );
 });
 
+const AFFILIATION_WORD: Record<string, string> = { owner: 'dueño', admin: 'admin', member: 'miembro', none: 'sin afiliación' };
+
 export default function RoomOccupantsScreen() {
   const { jid: raw } = useLocalSearchParams<{ jid: string }>();
   const jid = decodeURIComponent(raw ?? '');
   const room = useRoom(jid);
+  const { contacts } = useXmpp();
   const [target, setTarget] = useState<OccupantGroup | null>(null);
   const [subject, setSubjectText] = useState<string | null>(null);
+  const [showConfig, setShowConfig] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
 
   const sections = useMemo(() => {
     const { agents, people } = groupOccupants(Object.values(room?.occupants ?? {}));
@@ -42,7 +49,30 @@ export default function RoomOccupantsScreen() {
   const realJid = target?.key.startsWith('nick:') ? undefined : target?.key;
   // Moderar exige ser moderador o admin/owner; si no, el servidor lo rechazaría.
   const canModerate = room?.role === 'moderator' || room?.affiliation === 'admin' || room?.affiliation === 'owner';
+  const isOwner = room?.affiliation === 'owner';
+  const isAdmin = room?.affiliation === 'admin';
   const act = (p: Promise<void>) => { setTarget(null); p.catch(fail); };
+
+  const occupantJids = useMemo(() => {
+    const set = new Set<string>();
+    for (const o of Object.values(room?.occupants ?? {})) {
+      if (o.realJid) set.add(o.realJid);
+    }
+    return set;
+  }, [room?.occupants]);
+
+  const loadConfig = useCallback(() => getRoomConfigForm(jid), [jid]);
+  const submitConfig = useCallback(async (fields: ConfigField[]) => {
+    await submitRoomConfig(jid, fields);
+  }, [jid]);
+
+  const affiliationActions: { label: string; danger?: boolean; run: () => void }[] =
+    target && realJid && (isOwner || isAdmin)
+      ? (['owner', 'admin', 'member', 'none'] as MucAffiliation[])
+          .filter((a) => a !== target.affiliation)
+          .filter((a) => isOwner || (a !== 'owner' && a !== 'admin'))
+          .map((a) => ({ label: `Fijar ${AFFILIATION_WORD[a]}`, run: () => act(setAffiliation(jid, realJid, a)) }))
+      : [];
 
   const actions: { label: string; danger?: boolean; run: () => void }[] = !target || !canModerate ? [] : [
     { label: 'Expulsar', run: () => act(kick(jid, nick)) },
@@ -50,11 +80,29 @@ export default function RoomOccupantsScreen() {
     ...(['moderator', 'participant', 'visitor'] as MucRole[])
       .filter((r) => r !== target.role)
       .map((r) => ({ label: `Hacer ${ROLE_WORD[r]?.toLowerCase()}`, run: () => act(setRole(jid, nick, r)) })),
+    ...affiliationActions,
   ];
 
   return (
     <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: true, headerTitle: room?.name || jid, headerStyle: { backgroundColor: Colors.surface }, headerTintColor: Colors.text }} />
+      <Stack.Screen options={{
+        headerShown: true,
+        headerTitle: room?.name || jid,
+        headerStyle: { backgroundColor: Colors.surface },
+        headerTintColor: Colors.text,
+        headerRight: () => (
+          <View style={styles.headerActions}>
+            {isOwner && (
+              <Pressable onPress={() => setShowConfig(true)} accessibilityRole="button">
+                <Text style={styles.headerButton}>Config</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => setShowInvite(true)} accessibilityRole="button">
+              <Text style={styles.headerButton}>Invitar</Text>
+            </Pressable>
+          </View>
+        ),
+      }} />
       <View style={styles.subjectBox}>
         {subject === null ? (
           <Pressable onPress={() => canModerate && setSubjectText(room?.subject ?? '')}>
@@ -89,6 +137,14 @@ export default function RoomOccupantsScreen() {
           </View>
         </Pressable>
       </Modal>
+      <RoomConfigDialog visible={showConfig} loadForm={loadConfig} onSubmit={submitConfig} onClose={() => setShowConfig(false)} />
+      <RoomInviteDialog
+        visible={showInvite}
+        contacts={contacts}
+        alreadyInvited={occupantJids}
+        onInvite={(jid, reason) => act(invite(jid, jid, reason))}
+        onClose={() => setShowInvite(false)}
+      />
     </View>
   );
 }
@@ -109,6 +165,8 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: '#000A', justifyContent: 'flex-end' },
   sheet: { backgroundColor: Colors.surface, padding: 16, borderTopLeftRadius: 14, borderTopRightRadius: 14 },
   sheetTitle: { color: Colors.muted, fontSize: 13, marginBottom: 8 },
+  headerActions: { flexDirection: 'row', gap: 14, marginRight: 8 },
+  headerButton: { color: Colors.primary, fontSize: 15, fontWeight: '600' },
   action: { paddingVertical: 14 },
   actionText: { color: Colors.text, fontSize: 16 },
 });

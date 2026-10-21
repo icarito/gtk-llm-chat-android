@@ -4,6 +4,17 @@ GOOGLE_SERVICES := google-services.json
 
 .PHONY: check prepare-fcm build-release install-release reinstall-release launch push-logs prosody-push-logs
 
+.PHONY: linux-dev linux-build linux-run
+
+linux-dev:
+	npm run linux:dev
+
+linux-build:
+	npm run linux:build
+
+linux-run:
+	./src-tauri/target/release/gtk-llm-chat-linux
+
 check:
 	npm run type-check
 	npm run lint

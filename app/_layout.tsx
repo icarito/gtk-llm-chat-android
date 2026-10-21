@@ -3,7 +3,7 @@ import '../node-polyfills/crypto';
 import '../node-polyfills/process';
 import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Stack, router } from 'expo-router';
@@ -18,6 +18,7 @@ import * as QuickActions from 'expo-quick-actions';
 import { Ionicons } from '@expo/vector-icons';
 import * as SplashScreen from 'expo-splash-screen';
 import { maybeCheck, updatesSupported } from '@/update/updater';
+import { useDesktopZoom } from '@/web/useDesktopZoom';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -65,11 +66,16 @@ export default function RootLayout() {
   // La app nunca debe quedarse en el splash por culpa de la fuente de iconos.
   const fontsSettled = fontsLoaded || fontError !== null;
 
+  // Zoom de escritorio (Ctrl+rueda / Ctrl+'+'/'-') en el webview de Tauri.
+  useDesktopZoom();
+
   useEffect(() => {
     if (fontsSettled) SplashScreen.hideAsync().catch(() => {});
   }, [fontsSettled]);
 
   useEffect(() => {
+    // Expo push and Android launcher actions are unavailable in the webview.
+    if (Platform.OS === 'web') return;
     setupNotifications().catch(() => {});
     // Push remoto (XEP-0357) llega directo al SO sin pasar por el filtro de
     // isReplay del cliente; sin esto, cada cold start mezclaba avisos de
@@ -140,6 +146,15 @@ export default function RootLayout() {
               options={{
                 headerShown: true,
                 headerTitle: 'Configuración',
+                headerStyle: { backgroundColor: '#131822' },
+                headerTintColor: '#E0E0E0',
+              }}
+            />
+            <Stack.Screen
+              name="fleet"
+              options={{
+                headerShown: true,
+                headerTitle: 'Fleet monitor',
                 headerStyle: { backgroundColor: '#131822' },
                 headerTintColor: '#E0E0E0',
               }}
