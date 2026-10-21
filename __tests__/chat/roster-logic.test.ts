@@ -15,6 +15,7 @@ describe('roster', () => {
     [room('r@m', { bookmarked: true }), room('gone@m')],
     new Set(['ag@x']),
     (jid) => last[jid],
+    () => 0,
   );
 
   it('clasifica, omite salas sin marcador ni sesión y ordena por actividad', () => {

@@ -26,7 +26,7 @@ import { applyIncomingCorrection } from '@/xmpp/corrections';
 import { handleAnnotation, matchesTarget } from '@/xmpp/annotations';
 import { addMessageToMap, historyExtra } from '@/xmpp/messages';
 import { messages, rooms } from '@/xmpp/store';
-import { isGroupJidEx, isOwnGroupchatEcho, messageMentionsBot } from '@/xmpp/muc';
+import { isGroupJidEx, isOwnGroupchatEcho, messageMentionsBot, resolveMucSender } from '@/xmpp/muc';
 import { setTyping } from '@/xmpp/typing';
 import type { StanzaCtx } from '@/xmpp/session';
 
@@ -76,7 +76,11 @@ export async function handleCarbon(stanza: Element, ctx: StanzaCtx): Promise<voi
 
       const { decryptedBody, wasEncrypted, decryptedMetadata, encryptionStatus, attachmentLocalUri } =
         await decryptStanzaIfEncrypted(message, senderJid);
-      const rawBodyText = wasEncrypted ? (decryptedBody || '') : (replyBody(message) ?? message.getChildText('body') ?? '');
+      const rawBodyText = wasEncrypted
+        ? (encryptionStatus === 'undecryptable'
+            ? ((replyBody(message) ?? message.getChildText('body') ?? '').trim() || decryptedBody || '')
+            : decryptedBody)
+        : (replyBody(message) ?? message.getChildText('body') ?? '');
       const carbonBody = bodyWithOob(message, rawBodyText);
 
       if (carbonBody) {
@@ -251,6 +255,7 @@ export async function handleChatMessage(stanza: Element, ctx: StanzaCtx): Promis
     encryptionStatus,
     stanzaId,
     senderNick: type === 'groupchat' ? from.split('/')[1] : undefined,
+    senderRealJid: type === 'groupchat' ? resolveMucSender(stanza, bareJid(config.jid), true) ?? undefined : undefined,
   };
 
   if (seenIds.has(msg.id)) return;

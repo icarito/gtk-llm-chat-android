@@ -21,6 +21,7 @@ export async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string,
     const engine = getOmemo2();
     if (!engine) {
       if (!legacyEncrypted) {
+        console.warn('[decrypt] OMEMO2 undecryptable: engine no iniciado, from=', fromJid);
         return { decryptedBody: '🔒 [Mensaje OMEMO 2: activa el cifrado para descifrarlo]', wasEncrypted: true, encryptionStatus: 'undecryptable' as const };
       }
     } else {
@@ -32,6 +33,9 @@ export async function decryptStanzaIfEncrypted(stanza: Element, fromJid: string,
       const r = sender
         ? await engine.decrypt(stanza, sender, live, expectedTo)
         : { body: '🔒 [OMEMO 2: remitente desconocido en la sala]', status: 'undecryptable' as const };
+      if (r.status === 'undecryptable') {
+        console.warn('[decrypt] OMEMO2 result undecryptable, from=', fromJid, 'sender=', sender, 'live=', live, 'body=', r.body);
+      }
       if (r.status === 'omemo2' || !legacyEncrypted) {
         const attachmentLocalUri = r.body.startsWith(AESGCM_SCHEME)
           ? await materializeAesgcm(r.body)

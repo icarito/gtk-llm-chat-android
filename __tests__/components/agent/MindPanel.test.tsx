@@ -1,10 +1,12 @@
 import React from 'react';
-import { Linking } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { MindPanel, type MindCommand } from '@/components/agent/MindPanel';
 import { AgentActivityIndicator } from '@/components/agent/AgentActivityIndicator';
 import type { AgentTelemetry } from '@/xmpp/pep/telemetry';
 import type { HookEvent } from '@/xmpp/pep/hooks';
+
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 const commands: MindCommand[] = [
   { node: 'status', name: 'status', group: 'safe' },
@@ -20,15 +22,17 @@ const tel: AgentTelemetry = {
 };
 
 describe('MindPanel', () => {
-  it('opens the brain URL through the platform link handler', async () => {
-    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+  it('navigates to the integrated Brain view when a jid is provided', async () => {
     const url = 'https://example.invalid/brain?view=memory#notes';
     const { getByText } = render(
-      <MindPanel pendingApprovals={0} timeline={[]} commands={[]} onCommand={() => {}} brainUrl={url} />,
+      <MindPanel pendingApprovals={0} timeline={[]} commands={[]} onCommand={() => {}} brainUrl={url} jid="agent@fuentelibre.org" />,
     );
     fireEvent.press(getByText('Abrir el cerebro del agente'));
-    expect(open).toHaveBeenCalledWith(url);
-    open.mockRestore();
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/brain/[jid]',
+      params: { jid: encodeURIComponent('agent@fuentelibre.org') },
+    });
+    mockPush.mockClear();
   });
   it('is honest about missing cost and tool', () => {
     const { getByText } = render(

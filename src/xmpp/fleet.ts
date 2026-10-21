@@ -242,6 +242,51 @@ export async function fetchFleet(): Promise<void> {
   }
 }
 
+const BRAIN_TOKEN_KEY = 'fleet.brainTokens';
+
+/** Mapa jid-bare -> URL firmada (con token) del Brain, persistido. */
+export async function getBrainTokenMap(): Promise<string> {
+  try {
+    const raw = await AsyncStorage.getItem(BRAIN_TOKEN_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    return Object.entries(map).filter(([, v]) => v).map(([k, v]) => `${k} = ${v}`).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/** Guarda el mapa (formato "jid = url" por línea) y lo aplica. */
+export async function saveBrainTokenMap(text: string): Promise<void> {
+  const map: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const idx = line.indexOf('=');
+    if (idx <= 0) continue;
+    const jid = line.slice(0, idx).trim().split('/')[0].trim();
+    const url = line.slice(idx + 1).trim();
+    if (jid && url.startsWith('https://')) map[jid.toLowerCase()] = url;
+  }
+  if (Object.keys(map).length === 0) await AsyncStorage.removeItem(BRAIN_TOKEN_KEY);
+  else await AsyncStorage.setItem(BRAIN_TOKEN_KEY, JSON.stringify(map));
+}
+
+export type BrainUrl = { url: string; signed: boolean };
+
+/** URL del Brain para `jid`. `signed: true` si viene del mapa de tokens firmados
+ *  (indicado para la vista integrada); si no, es el brain-url del snapshot (que
+ *  suele requerir sesión del navegador y conviene abrir externamente). */
+export async function resolveBrainUrl(jid: string): Promise<BrainUrl> {
+  const bare = jid.split('/')[0].toLowerCase();
+  try {
+    const raw = await AsyncStorage.getItem(BRAIN_TOKEN_KEY);
+    if (raw) {
+      const map = JSON.parse(raw) as Record<string, string>;
+      const signed = map[bare];
+      if (signed) return { url: signed, signed: true };
+    }
+  } catch { /* noop */ }
+  return { url: brainUrl(currentFleetSnapshot(), jid), signed: false };
+}
+
 /** brain-url del chat `jid` (primitivo: re-renderiza sólo si cambia). null en salas / sin declaración. */
 export function useBrainUrl(jid: string): string | null {
   return useSyncExternalStore(subscribe, () => brainUrl(snapshot, jid) || null);

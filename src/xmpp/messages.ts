@@ -3,6 +3,7 @@ import { xml } from '@xmpp/client';
 import type { XmppMessage } from '@/types/xmpp';
 import { isEncrypted } from '@/xmpp/encryption';
 import { isNotificationGraceActive, notifyXmppMessage } from '@/xmpp/notifications';
+import { unread } from '@/xmpp/store';
 import type { Element } from '@xmpp/xml';
 import { Omemo } from '@/xmpp/xep-0384';
 import { getOmemo2 } from '@/xmpp/omemo2';
@@ -64,31 +65,44 @@ async function encryptOutbound(
   } else {
     const engine = getOmemo2();
     if (engine) {
-      const peers = await omemoRoomRecipients(to);
-      const res = peers ? await engine.encryptOutgoingGroup(to, peers, id, body) : null;
-      const room = rooms.get(to);
-      if (room) {
-        const reason = res ? undefined
-          : !engine.isEnabledFor(to) ? 'cifrado desactivado'
-          : room.nonAnonymous ? 'nadie con OMEMO 2' : room.omemoUnavailableReason;
-        rooms.patch(to, { omemoSkipped: res?.skipped.length ?? 0, omemoUnavailableReason: reason });
+      try {
+        const peers = await omemoRoomRecipients(to);
+        const res = peers ? await engine.encryptOutgoingGroup(to, peers, id, body) : null;
+        const room = rooms.get(to);
+        if (room) {
+          const reason = res ? undefined
+            : !engine.isEnabledFor(to) ? 'cifrado desactivado'
+            : room.nonAnonymous ? 'nadie con OMEMO 2' : room.omemoUnavailableReason;
+          rooms.patch(to, { omemoSkipped: res?.skipped.length ?? 0, omemoUnavailableReason: reason });
+        }
+        if (res) return { children: res.children, status: 'omemo2' };
+      } catch (e) {
+        // Nunca abandonar el envío por lím cifrado de grupo (sesión/dispositivo
+        // no disponible): se degrada a texto plano y el mensaje sale igual.
+        console.warn('[sendMessage] cifrado OMEMO2 de grupo falló, envío en claro (', String(e), ')');
       }
-      return res ? { children: res.children, status: 'omemo2' } : null;
     }
   }
   const legacyOn = session.account?.omemoEnabled && Omemo.isEnabled()
     && (type === 'groupchat' || (getOmemo2()?.isEnabledFor(to) ?? true));
-  if (!legacyOn) return null;
-  const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, body, type === 'groupchat');
-  if (!wasEncrypted || !encryptedXml) throw new Error(`No hay dispositivos OMEMO compatibles para ${to}`);
-  return {
-    children: [
-      encryptedXml,
-      xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: 'eu.siacs.conversations.axolotl', name: 'OMEMO' }),
-      xml('store', { xmlns: 'urn:xmpp:hints' }),
-    ],
-    status: 'omemo',
-  };
+  if (legacyOn) {
+    try {
+      const { encryptedXml, wasEncrypted } = await Omemo.encryptMessage(to, body, type === 'groupchat');
+      if (wasEncrypted && encryptedXml) {
+        return {
+          children: [
+            encryptedXml,
+            xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: 'eu.siacs.conversations.axolotl', name: 'OMEMO' }),
+            xml('store', { xmlns: 'urn:xmpp:hints' }),
+          ],
+          status: 'omemo',
+        };
+      }
+    } catch (e) {
+      console.warn('[sendMessage] cifrado legacy falló, envío en claro (', String(e), ')');
+    }
+  }
+  return null;
 }
 
 export function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
@@ -100,9 +114,13 @@ export function addMessageToMap(msg: XmppMessage, notifyIncoming = true) {
   if (msg.direction === 'out') {
     expireMatchingQuickResponses(key, msg.body, msg.timestamp);
     resolveApprovalActionsFromOwnMessage(key, msg.body);
-  } else if (notifyIncoming && !msg.correctedAtMs && !isNotificationGraceActive()) {
-    const contact = contacts.get(msg.from);
-    notifyXmppMessage(msg, contact?.name);
+  } else {
+    // No leídos: cualquier entrante vivo incrementa; se limpian al abrir el chat.
+    if (!msg.correctedAtMs && msg.sendState !== 'pending') unread.increment(key);
+    if (notifyIncoming && !msg.correctedAtMs && !isNotificationGraceActive()) {
+      const contact = contacts.get(msg.from);
+      notifyXmppMessage(msg, contact?.name);
+    }
   }
 }
 
@@ -114,6 +132,7 @@ export function historyExtra(msg: XmppMessage): HistoryExtra | undefined {
     retracted: msg.retracted,
     mucStanzaId: msg.stanzaId,
     senderNick: msg.senderNick,
+    senderRealJid: msg.senderRealJid ?? null,
   };
   return Object.values(extra).some(Boolean) ? extra : undefined;
 }

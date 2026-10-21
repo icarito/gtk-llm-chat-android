@@ -135,6 +135,41 @@ export const pendingActions = {
   },
 };
 
+// ── No leídos ──
+
+const unreadCounts = new Map<string, number>();
+const unreadListeners = new Listeners();
+let unreadTotal = 0;
+
+export const unread = {
+  get(jid: string): number {
+    return unreadCounts.get(jid) ?? 0;
+  },
+  total(): number {
+    return unreadTotal;
+  },
+  increment(jid: string) {
+    unreadCounts.set(jid, (unreadCounts.get(jid) ?? 0) + 1);
+    unreadTotal++;
+    unreadListeners.emit();
+  },
+  clear(jid: string) {
+    const c = unreadCounts.get(jid);
+    if (!c) return;
+    unreadCounts.delete(jid);
+    unreadTotal = Math.max(0, unreadTotal - c);
+    unreadListeners.emit();
+  },
+  reset() {
+    unreadCounts.clear();
+    unreadTotal = 0;
+    unreadListeners.emit();
+  },
+  subscribe(cb: () => void): () => void {
+    return unreadListeners.add(cb);
+  },
+};
+
 // ── Salas (MUC) e invitaciones ──
 
 const roomsMap = new Map<string, XmppRoom>();

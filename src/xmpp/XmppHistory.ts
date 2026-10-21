@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
     retracted INTEGER NOT NULL DEFAULT 0,
     muc_stanza_id TEXT,
     sender_nick TEXT,
+    sender_real_jid TEXT,
     UNIQUE(bare_jid, mam_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(bare_jid, timestamp);
@@ -65,6 +66,7 @@ export interface HistoryRow {
   retracted: number;
   muc_stanza_id: string | null;
   sender_nick: string | null;
+  sender_real_jid: string | null;
 }
 
 /** Metadatos de XEP-0444/0461/0424/0359 que acompañan a una fila nueva. */
@@ -74,6 +76,7 @@ export interface HistoryExtra {
   retracted?: boolean;
   mucStanzaId?: string | null;
   senderNick?: string | null;
+  senderRealJid?: string | null;
 }
 
 export interface HistoryPreviewRow extends HistoryRow {
@@ -197,6 +200,9 @@ async function migrateMetadataColumns(db: SQLite.HistoryDatabase): Promise<void>
   if (!names.has('sender_nick')) {
     await db.execAsync('ALTER TABLE messages ADD COLUMN sender_nick TEXT');
   }
+  if (!names.has('sender_real_jid')) {
+    await db.execAsync('ALTER TABLE messages ADD COLUMN sender_real_jid TEXT');
+  }
 }
 
 function decodeObject<T>(value: string | null | undefined): T | null {
@@ -244,10 +250,11 @@ type DbHistoryRow = Omit<
   retracted?: number | null;
   muc_stanza_id?: string | null;
   sender_nick?: string | null;
+  sender_real_jid?: string | null;
 };
 
 const ROW_COLUMNS = 'body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, was_encrypted, '
-  + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick';
+  + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick, sender_real_jid';
 
 function decodeRow(row: DbHistoryRow): HistoryRow {
   return {
@@ -266,6 +273,7 @@ function decodeRow(row: DbHistoryRow): HistoryRow {
     retracted: Number(row.retracted ?? 0),
     muc_stanza_id: row.muc_stanza_id ?? null,
     sender_nick: row.sender_nick ?? null,
+    sender_real_jid: row.sender_real_jid ?? null,
   };
 }
 
@@ -317,8 +325,8 @@ export const XmppHistory = {
       'INSERT OR IGNORE INTO messages '
         + '(bare_jid, body, direction, timestamp, mam_id, quick_responses, commands, stanza_id, oob_url, '
         + 'attachment_mime_type, attachment_duration, attachment_local_path, attachment_state, was_encrypted, notified, '
-        + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick) '
-        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        + 'reactions, reply_to, retracted, muc_stanza_id, sender_nick, sender_real_jid) '
+        + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         bareJid,
         body,
@@ -344,6 +352,7 @@ export const XmppHistory = {
         extra?.retracted ? 1 : 0,
         extra?.mucStanzaId ?? null,
         extra?.senderNick ?? null,
+        extra?.senderRealJid ?? null,
       ],
     );
     if (result.changes === 0 && mamId && (quickResponses?.length || commands?.length)) {
@@ -488,6 +497,27 @@ export const XmppHistory = {
       unique,
     );
     return rows.map((row) => ({ ...decodeRow(row), bare_jid: row.bare_jid }));
+  },
+
+  /**
+   * Cura una fila-placeholder 🔒 que quedó sin descifrar (p.ej. al entrar y
+   * MAM ya devuelve el mensaje descifrado con el mismo mam_id: la UPDATE
+   * reemplaza el body y el estado de cifrado en vez de ignorarla (así la
+   * segunda lectura no depende de reabrir el chat). Devuelve true si curó.
+   */
+  async healUndecryptableBody(
+    bareJid: string,
+    mamId: string,
+    body: string,
+  ): Promise<boolean> {
+    if (!mamId) return false;
+    const db = await getDb();
+    const result = await db.runAsync(
+      'UPDATE messages SET body = ?, was_encrypted = ? '
+        + 'WHERE bare_jid = ? AND mam_id = ? AND body LIKE ?',
+      [body, body.startsWith('🔒') ? 1 : 0, bareJid, mamId, '🔒%'],
+    );
+    return result.changes > 0;
   },
 
   /**

@@ -5,7 +5,7 @@ import type { XmppMessage } from '@/types/xmpp';
 import { isEncrypted } from '@/xmpp/encryption';
 import { XmppHistory, type HistoryRow } from '@/xmpp/XmppHistory';
 import { decryptStanzaIfEncrypted } from '@/xmpp/decrypt';
-import { isGroupConversation } from '@/xmpp/muc';
+import { isGroupConversation, resolveMucSender } from '@/xmpp/muc';
 import { QUICK_RESPONSE_NS } from '@/xmpp/ns';
 import {
   bareJid,
@@ -20,6 +20,7 @@ import {
 import { restorePendingQuickResponses } from '@/xmpp/actions';
 import { applyReactions, applyRetraction, patchList } from '@/xmpp/annotations';
 import { historyExtra } from '@/xmpp/messages';
+import { isUndecryptableBody } from '@/chat/mergeMessages';
 import { rooms } from '@/xmpp/store';
 import { foldReactions, parseReactions } from '@/xmpp/xep/reactions';
 import { parseRetract } from '@/xmpp/xep/retract';
@@ -77,6 +78,7 @@ export function parseMamResult(mamResult: Element, ownJid: string, ownNick?: str
     id: (message.attrs.id as string) || mamId || `mam-${timestamp}`,
     stanzaId,
     senderNick,
+    senderRealJid: type === 'groupchat' ? resolveMucSender(message, ownBare, false) ?? undefined : undefined,
     retractId,
     reactionEvent: reactions
       ? { targetId: reactions.targetId, emojis: reactions.emojis, sender: type === 'groupchat' ? fromAttr : fromBare }
@@ -273,6 +275,16 @@ export async function persistAndDedupe(contactJid: string, messages: XmppMessage
       continue;
     }
     const extra = historyExtra(msg);
+    // Si la fila cacheada quedó como placeholder 🔒 (entrada en frío con el
+    // motor OMEMO aún sin listo) y MAM ya trae el mensaje descifrado con el
+    // mismo mam_id, curar la fila en vez de ignorarla.
+    if (!isUndecryptableBody(msg.body)) {
+      const healed = await XmppHistory.healUndecryptableBody(contactJid, mamId ?? '', msg.body);
+      if (healed) {
+        fresh.push(msg);
+        continue;
+      }
+    }
     const inserted = await XmppHistory.recordMessage(
       contactJid,
       msg.body,
@@ -314,6 +326,7 @@ export function rowToMessage(row: HistoryRow, contactJid: string): XmppMessage {
     isGroup: group,
     stanzaId: row.muc_stanza_id ?? (group ? row.mam_id : null),
     senderNick: row.sender_nick ?? undefined,
+    senderRealJid: row.sender_real_jid ?? undefined,
     reactions: row.reactions ?? undefined,
     replyTo: row.reply_to,
     retracted: row.retracted === 1 ? true : undefined,
@@ -364,6 +377,12 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
     mamEncryptionStatus = encryptionStatus;
     mamLocalUri = attachmentLocalUri;
     if (wasEncrypted && decryptedBody) {
+      // Si el descifrado falló pero la stanza trae un <body> de respaldo en
+      // claro (OMEMO 2 lo incluye), se conserva ESE texto y no el placeholder:
+      // la fila queda legible desde la primera entrada, estable (sin reflow
+      // placeholder→real) e independiente de tener ya el mapa de ocupantes.
+      const undecryptable = encryptionStatus === 'undecryptable';
+      const fallbackBody = undecryptable ? message.getChildText('body') ?? '' : '';
       const encryptedNode = message.getChild('encrypted', 'eu.siacs.conversations.axolotl')
         || message.getChild('encrypted', 'urn:xmpp:omemo:2');
       if (encryptedNode) {
@@ -372,7 +391,7 @@ export async function handleMamResult(stanza: Element, ctx: StanzaCtx): Promise<
       }
       // Fuera el <body> de respaldo en claro (OMEMO 2 lo trae): getChildText tomaría el primero.
       message.children = message.children.filter((c) => c.name !== 'body');
-      message.children.push(xml('body', {}, decryptedBody));
+      message.children.push(xml('body', {}, fallbackBody || decryptedBody));
 
       if (decryptedMetadata) {
         if (decryptedMetadata.quickResponses) {
