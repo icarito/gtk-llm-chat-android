@@ -44,7 +44,7 @@ export default function BrainScreenWeb() {
     <View style={styles.container}>
       <iframe src={uri} title="Brain del agente" style={styles.iframe} />
       <View style={styles.openWrap}>
-        <Pressable style={styles.openBtn} onPress={() => openExternalUrl(uri)} accessibilityRole="button">
+        <Pressable style={styles.openLink} onPress={() => openExternalUrl(uri)} accessibilityRole="link">
           <Text style={styles.openText}>Abrir en el navegador</Text>
         </Pressable>
       </View>
@@ -57,7 +57,7 @@ const styles = StyleSheet.create({
   iframe: { width: '100%', height: '100%', borderWidth: 0 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   err: { color: Colors.textDim, fontSize: 14, textAlign: 'center' },
-  openWrap: { position: 'absolute', bottom: 16, left: 16, right: 16, alignItems: 'center' },
-  openBtn: { backgroundColor: Colors.primary, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 20, alignItems: 'center' },
-  openText: { color: Colors.background, fontWeight: '700', fontSize: 14 },
+  openWrap: { position: 'absolute', bottom: 10, left: 0, right: 0, alignItems: 'center' },
+  openLink: { paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(10,14,20,0.55)', borderRadius: 8 },
+  openText: { color: Colors.textDim, fontSize: 12 },
 });

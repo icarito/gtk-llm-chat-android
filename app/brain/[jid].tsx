@@ -70,6 +70,8 @@ export default function BrainScreen() {
         javaScriptEnabled
         domStorageEnabled
         setSupportMultipleWindows={false}
+        sharedCookiesEnabled
+        thirdPartyCookiesEnabled
         style={styles.web}
       />
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
