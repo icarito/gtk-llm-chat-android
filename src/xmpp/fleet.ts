@@ -272,8 +272,10 @@ export async function saveBrainTokenMap(text: string): Promise<void> {
 export type BrainUrl = { url: string; signed: boolean };
 
 /** URL del Brain para `jid`. `signed: true` si viene del mapa de tokens firmados
- *  (indicado para la vista integrada); si no, es el brain-url del snapshot (que
- *  suele requerir sesión del navegador y conviene abrir externamente). */
+ *  (indicado para la vista integrada); si no, es el brain-url del snapshot. El
+ *  brain-url del snapshot incluye un fw_link firmado que caduca: SIEMPRE
+ *  refrescamos el snapshot de flota antes de devolverlo para no servir un token
+ *  viejo/vencido (que haría caer la vista integrada al login). */
 export async function resolveBrainUrl(jid: string): Promise<BrainUrl> {
   const bare = jid.split('/')[0].toLowerCase();
   try {
@@ -284,6 +286,7 @@ export async function resolveBrainUrl(jid: string): Promise<BrainUrl> {
       if (signed) return { url: signed, signed: true };
     }
   } catch { /* noop */ }
+  await fetchFleet();
   return { url: brainUrl(currentFleetSnapshot(), jid), signed: false };
 }
 
