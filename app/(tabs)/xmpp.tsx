@@ -19,6 +19,8 @@ import { presenceColor, presenceLabel } from '@/xmpp/presence';
 import type { XmppMessage } from '@/types/xmpp';
 import { InviteCard } from '@/components/nav/InviteCard';
 import { useAgentJids } from '@/components/nav/hooks';
+import { useUnread, useUnreadTotal } from '@/chat/stores';
+import { unread } from '@/xmpp/store';
 import { ROSTER_FILTERS, buildRoster, filterRoster, previewText, type RosterFilter, type RosterItem } from '@/components/nav/rosterLogic';
 import { useRoomInvites, useRooms } from '@/xmpp/XmppContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,6 +47,7 @@ const RosterRow = memo(function RosterRow({ item, avatar, last, onPress }: {
   onPress: (jid: string) => void;
 }) {
   const { contact, room } = item;
+  const unread = useUnread(item.jid);
   const subtitle = room
     ? (room.subject || room.jid)
     : (contact?.status || presenceLabel(contact?.presence ?? 'offline'));
@@ -58,6 +61,11 @@ const RosterRow = memo(function RosterRow({ item, avatar, last, onPress }: {
           ) : (
             <Ionicons name={room ? 'people' : item.kind === 'agent' ? 'hardware-chip' : 'person'} size={28} color={Colors.text} />
           )}
+          {unread > 0 ? (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.contactInfo}>
           <Text style={styles.contactName} numberOfLines={1}>{room ? `#${item.name}` : item.name}</Text>
@@ -114,9 +122,11 @@ export default function XmppScreen() {
   const agentSet = useMemo(() => new Set(agentJids), [agentJids]);
   // Roster por actividad reciente: la conversación que se acaba de mover va
   // arriba; sin historial, al final y por nombre.
+  const unreadTotal = useUnreadTotal();
   const roster = useMemo(
-    () => filterRoster(buildRoster(contacts, rooms, agentSet, previewFor), filter),
-    [contacts, rooms, agentSet, previewFor, filter],
+    () => filterRoster(buildRoster(contacts, rooms, agentSet, previewFor, (jid) => unread.get(jid)), filter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [contacts, rooms, agentSet, previewFor, filter, unreadTotal],
   );
 
   // Si el usuario terminó en el formulario con una cuenta ya guardada (logout
@@ -484,6 +494,20 @@ const styles = StyleSheet.create({
     borderColor: Colors.background,
     zIndex: 1,
   },
+  unreadBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    zIndex: 2,
+  },
+  unreadText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700' },
   contactInfo: {
     flex: 1,
   },

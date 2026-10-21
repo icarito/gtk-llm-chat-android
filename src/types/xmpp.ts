@@ -51,6 +51,10 @@ export interface XmppMessage {
   stanzaId?: string | null;
   /** Groupchat: nick del ocupante que lo envió (`from` es el bare de la sala). */
   senderNick?: string;
+  /** Groupchat: JID real (bare) del remitente, si se pudo resolver (XEP-0045
+   *  muc#user en MAM, o mapa de ocupantes en vivo). Ayuda a mostrar avatares
+   *  en históricos aunque el ocupante ya no esté presente. */
+  senderRealJid?: string | null;
   /** XEP-0444 agregadas: emoji -> remitentes (bare JID en chat; `sala/nick` en groupchat). */
   reactions?: Record<string, string[]>;
   /** XEP-0424: el autor lo retractó. Se conserva como lápida (el body queda). */

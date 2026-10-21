@@ -7,6 +7,7 @@ import { ChatHeaderTitle } from '@/chat/ChatHeaderTitle';
 import { ChatPane } from '@/chat/ChatPane';
 import { Colors } from '@/constants/theme';
 import { dismissNotificationForJid, setActiveChatJid } from '@/xmpp/notifications';
+import { unread } from '@/xmpp/store';
 import { XmppService } from '@/xmpp/XmppService';
 import { useConnectionState } from '@/chat/stores';
 
@@ -24,6 +25,7 @@ export default function XmppChatScreen() {
   // Suprime notificaciones locales mientras el chat está abierto y limpia las ya mostradas.
   useEffect(() => {
     setActiveChatJid(decodedJid);
+    unread.clear(decodedJid);
     dismissNotificationForJid(decodedJid).catch(() => {});
     return () => setActiveChatJid(null);
   }, [decodedJid]);
