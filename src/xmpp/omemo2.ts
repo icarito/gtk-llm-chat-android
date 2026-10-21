@@ -548,6 +548,26 @@ export class Omemo2Engine {
     }
     return { body, status: 'omemo2' };
   }
+
+  /**
+   * "Calienta" la sesión contra `jid` (bare) como si hubiéramos enviado un
+   * mensaje: republica nuestro bundle/device (para que el par nos encuentre),
+   * refresca su device list y establece sesión X3DH con cada dispositivo suyo.
+   * Esto permite descifrar mensajes suyos pendientes sin tener que hablarle
+   * primero (el envío hacía esto como efecto colateral).
+   */
+  async warmupAgainst(jid: string): Promise<void> {
+    const bare = bareJid(jid);
+    if (!bare || bare === this.ownBare) return;
+    await this.publishOwn().catch(() => {});
+    let ids = this.state.devices[bare] ?? [];
+    if (ids.length === 0) {
+      try { ids = await this.fetchDevices(bare); } catch { ids = []; }
+    }
+    for (const rid of ids) {
+      await this.ensureSession({ jid: bare, rid }).catch(() => {});
+    }
+  }
 }
 
 // ── Singleton ligado a la conexión ──
@@ -643,6 +663,9 @@ export const omemo2Api = {
   setEnabledFor: (jid: string, enabled: boolean) => engine?.setEnabledFor(jid, enabled) ?? Promise.resolve(),
   /** Vuelve a pedir la device list del contacto (p. ej. al abrir su chat). */
   refresh: (jid: string) => engine?.fetchDevices(jid).then(() => undefined).catch(() => undefined) ?? Promise.resolve(),
+  /** Establece sesión contra `jid` (como si hubiéramos enviado) para poder
+   *  descifrar mensajes pendientes sin hablarle primero. */
+  warmupAgainst: (jid: string) => engine?.warmupAgainst(jid) ?? Promise.resolve(),
   subscribe(cb: () => void): () => void {
     listeners.add(cb);
     return () => listeners.delete(cb);

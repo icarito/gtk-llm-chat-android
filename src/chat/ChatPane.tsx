@@ -190,7 +190,11 @@ function ChatPaneImpl({ jid }: { jid: string }) {
         if (tries++ < 12) setTimeout(attempt, 700);
         return;
       }
-      XmppService.omemo2.refresh(bare(jid))
+      // "Calienta" la sesión (equivalente a haberle hablado) y luego re-sincroniza
+      // MAM para reintentar el descifrado y curar los placeholders.
+      XmppService.omemo2.warmupAgainst(bare(jid))
+        .catch(() => {})
+        .then(() => XmppService.omemo2.refresh(bare(jid)))
         .then(() => { if (!stopped) setSyncTick((t) => t + 1); })
         .catch(() => {});
     };
