@@ -159,6 +159,15 @@ export default function RootLayout() {
                 headerTintColor: '#E0E0E0',
               }}
             />
+            <Stack.Screen
+              name="brain/[jid]"
+              options={{
+                headerShown: true,
+                headerTitle: 'Brain',
+                headerStyle: { backgroundColor: '#131822' },
+                headerTintColor: '#E0E0E0',
+              }}
+            />
           </Stack>
         </XmppProvider>
       </SafeAreaProvider>

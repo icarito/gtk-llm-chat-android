@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
-import { openExternalUrl } from '@/platform/openExternalUrl';
 import type { HookEvent } from '@/xmpp/pep/hooks';
 import { formatCost, formatTool, type AgentTelemetry } from '@/xmpp/pep/telemetry';
 
@@ -20,6 +20,8 @@ export interface MindPanelProps {
   onCommand: (node: string) => void;
   /** brain-url https del agente (fleet snapshot); sin él no hay botón. */
   brainUrl?: string | null;
+  /** JID del agente para navegar a la vista integrada del Brain. */
+  jid?: string;
   /** Reloj inyectable para los tiempos relativos. */
   nowMs?: number;
 }
@@ -95,6 +97,7 @@ export function MindPanel({
   onCommand,
   nowMs,
   brainUrl,
+  jid,
 }: MindPanelProps) {
   const [armed, setArmed] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -117,6 +120,7 @@ export function MindPanel({
     timer.current = setTimeout(() => setArmed(null), CONFIRM_MS);
   };
 
+  const router = useRouter();
   const now = nowMs ?? Date.now();
   const t = telemetry;
   const used = t?.context.used;
@@ -171,7 +175,10 @@ export function MindPanel({
       ) : null}
 
       {brainUrl ? (
-        <Pressable onPress={() => openExternalUrl(brainUrl)} accessibilityRole="link">
+        <Pressable
+          onPress={() => jid && router.push({ pathname: '/brain/[jid]', params: { jid: encodeURIComponent(jid) } } as never)}
+          accessibilityRole="link"
+        >
           <Text style={styles.value}>Abrir el cerebro del agente</Text>
         </Pressable>
       ) : null}

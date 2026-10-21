@@ -1,4 +1,5 @@
-import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import {
   FRESHNESS_LABEL,
@@ -135,6 +136,7 @@ function Inventory() {
 }
 
 function EntityRow({ entity }: { entity: FleetEntity }) {
+  const router = useRouter();
   const state = stateKey(entity);
   const color = stateColor(state);
   const label = String(entity.label ?? entity.team ?? entity.id ?? 'Unassigned');
@@ -163,7 +165,10 @@ function EntityRow({ entity }: { entity: FleetEntity }) {
           </View>
         </View>
         {brain ? (
-          <Text style={styles.brainLink} onPress={() => { void Linking.openURL(brain); }}>
+          <Text
+            style={styles.brainLink}
+            onPress={() => router.push({ pathname: '/brain/[jid]', params: { jid: encodeURIComponent(jid) } } as never)}
+          >
             Brain
           </Text>
         ) : null}

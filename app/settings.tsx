@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, StyleSheet, Switch, Text, TextInput, Touchabl
 import { Colors } from '@/constants/theme';
 import { useXmpp } from '@/xmpp/XmppContext';
 import { currentVersion, runCheck, startDownload, startInstall, updatesSupported, useUpdate } from '@/update/updater';
-import { getStoredFleetSource, saveFleetSource } from '@/xmpp/fleet';
+import { getStoredFleetSource, saveFleetSource, getBrainTokenMap, saveBrainTokenMap } from '@/xmpp/fleet';
 
 /** Cuerpo de ajustes; la pestaña Yo lo reutiliza. */
 export function SettingsBody() {
@@ -46,6 +46,7 @@ export function SettingsBody() {
       </View>
       {updatesSupported && <UpdateSettings />}
       <FleetSourceSettings />
+      <BrainTokenSettings />
     </View>
   );
 }
@@ -87,6 +88,34 @@ function UpdateSettings() {
             <Text style={styles.buttonText}>{state === 'checking' ? 'Buscando…' : 'Buscar actualizaciones'}</Text>
           </TouchableOpacity>
         </View>
+      </View>
+    </>
+  );
+}
+
+/** URL firmada (con token) del Brain por agente: permite abrir la vista integrada
+ *  logueada sin complicar roles; sólo quien tiene la URL firmada accede. */
+function BrainTokenSettings() {
+  const [tokenMap, setTokenMap] = useState('');
+  useEffect(() => {
+    getBrainTokenMap().then(setTokenMap).catch(() => {});
+  }, []);
+  const save = useCallback(() => {
+    saveBrainTokenMap(tokenMap)
+      .then(() => Alert.alert('Brain', 'URLs firmadas guardadas'))
+      .catch((e) => Alert.alert('Brain', String(e)));
+  }, [tokenMap]);
+  return (
+    <>
+      <Text style={[styles.sectionTitle, styles.sectionGap]}>Brain</Text>
+      <View style={[styles.settingRow, styles.column]}>
+        <Text style={styles.settingHint}>URL firmada (con token) del Brain por agente. Formato: jid bare = url, una por línea. Sólo quienes tienen la URL firmada acceden.</Text>
+        <TextInput style={[styles.input, styles.multiline]} value={tokenMap} onChangeText={setTokenMap} multiline
+          placeholder="brain@hablar.fuentelibre.org = https://wiki.fuentelibre.org/brain?token=..."
+          placeholderTextColor={Colors.textDim} autoCapitalize="none" autoCorrect={false} />
+        <TouchableOpacity style={styles.button} onPress={save} accessibilityRole="button">
+          <Text style={styles.buttonText}>Guardar</Text>
+        </TouchableOpacity>
       </View>
     </>
   );
@@ -159,6 +188,7 @@ const styles = StyleSheet.create({
   sectionGap: { marginTop: 24 },
   column: { flexDirection: 'column', alignItems: 'stretch', gap: 10 },
   input: { backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, borderRadius: 8, color: Colors.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  multiline: { minHeight: 90, textAlignVertical: 'top' },
   button: { alignSelf: 'flex-end', backgroundColor: Colors.primary, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8 },
   buttonRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' },
   disabled: { opacity: 0.5 },

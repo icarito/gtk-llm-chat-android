@@ -17,13 +17,21 @@ export default function FlotaScreen() {
   const openMonitor = useCallback(() => {
     router.push({ pathname: '/fleet' } as never);
   }, [router]);
+  const openMente = useCallback(() => {
+    router.push({ pathname: '/mente' } as never);
+  }, [router]);
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>Flota</Text>
-        <Pressable style={styles.monitorBtn} onPress={openMonitor} disabled={!hasFleetSource()} accessibilityRole="button">
-          <Text style={[styles.monitorText, !hasFleetSource() && styles.monitorDisabled]}>Monitor</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable style={styles.monitorBtn} onPress={openMente} accessibilityRole="button">
+            <Text style={styles.monitorText}>Mente</Text>
+          </Pressable>
+          <Pressable style={styles.monitorBtn} onPress={openMonitor} disabled={!hasFleetSource()} accessibilityRole="button">
+            <Text style={[styles.monitorText, !hasFleetSource() && styles.monitorDisabled]}>Monitor</Text>
+          </Pressable>
+        </View>
       </View>
       <FlatList
         data={jids as string[]}
@@ -44,6 +52,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   header: { paddingHorizontal: 16, paddingBottom: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { fontSize: 24, fontWeight: '700', color: Colors.text },
+  headerActions: { flexDirection: 'row', gap: 8 },
   monitorBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#202A36', borderWidth: 1, borderColor: Colors.surfaceBorder },
   monitorText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
   monitorDisabled: { color: Colors.textDim },
