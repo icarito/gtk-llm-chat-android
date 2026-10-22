@@ -190,11 +190,15 @@ function ChatPaneImpl({ jid }: { jid: string }) {
         if (tries++ < 12) setTimeout(attempt, 700);
         return;
       }
-      // "Calienta" la sesión (equivalente a haberle hablado) y luego re-sincroniza
-      // MAM para reintentar el descifrado y curar los placeholders.
+      // "Calienta" la sesión (equivalente a haberle hablado) y luego re-fetcha
+      // una ventana reciente de MAM IGNORANDO el cursor incremental: así los
+      // mensajes que ya tenemos como 🔒 vuelven a ser entregados por el archivo
+      // y se curan en vivo (el sync incremental no los re-entrega por ir
+      // detrás del cursor).
       XmppService.omemo2.warmupAgainst(bare(jid))
         .catch(() => {})
         .then(() => XmppService.omemo2.refresh(bare(jid)))
+        .then(() => XmppService.refetchRecentForDecrypt(bare(jid)))
         .then(() => { if (!stopped) setSyncTick((t) => t + 1); })
         .catch(() => {});
     };

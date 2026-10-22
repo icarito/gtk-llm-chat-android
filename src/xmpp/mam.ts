@@ -480,6 +480,18 @@ export async function loadCachedPreviews(contactJids: string[]): Promise<Map<str
  * the oldest messages and silently omits the recent ones — the exact bug the
  * GTK client hit (see load_history_from_mam in xmpp_client.py).
  */
+/**
+ * Re-fetches a bounded recent window (by time, IGNORING the incremental cursor)
+ * so messages we already hold but couldn't decrypt (placeholder 🔒) are
+ * re-delivered by MAM and healed. Used after warmupAgainst() to decrypt without
+ * the user having to send a message first.
+ */
+export async function refetchRecentForDecrypt(contactJid: string, windowMs = 7 * 24 * 3600 * 1000): Promise<XmppMessage[]> {
+  const start = new Date(Date.now() - windowMs).toISOString();
+  const result = await runMamQuery(contactJid, { start });
+  return persistAndDedupe(contactJid, result.messages);
+}
+
 export async function syncHistory(contactJid: string, force = false): Promise<XmppMessage[]> {
   if (!usableClient() || !session.account) return [];
 

@@ -51,6 +51,7 @@ import {
   loadCachedHistory,
   loadCachedPreviews,
   loadOlderHistory,
+  refetchRecentForDecrypt,
   restoreCachedActions,
   syncHistory,
 } from '@/xmpp/mam';
@@ -615,6 +616,7 @@ export const XmppService = {
   loadCachedPreviews,
   syncHistory,
   loadOlderHistory,
+  refetchRecentForDecrypt,
 };
 
 // Cola de respuestas de notificación: se vacía al volver a online.
