@@ -8,6 +8,7 @@ import { useXmpp } from '@/xmpp/XmppContext';
 import { XmppService } from '@/xmpp/XmppService';
 import { publishAvatar } from '@/xmpp/avatarPublish';
 import { SettingsBody } from '../settings';
+import { AccountForm } from '@/components/account/AccountForm';
 
 export default function YoScreen() {
   const { account, state, disconnect } = useXmpp();
@@ -45,7 +46,7 @@ export default function YoScreen() {
       { text: 'Galería', onPress: () => { void change('gallery'); } },
     ], { cancelable: true });
   }, [online, change]);
-  return (
+  return account ? (
     <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>Yo</Text>
@@ -56,17 +57,19 @@ export default function YoScreen() {
         </TouchableOpacity>
         <View style={styles.statusRow}>
           <View style={[styles.dot, { backgroundColor: online ? Colors.success : Colors.error }]} />
-          <Text style={styles.jid}>{account?.jid ?? 'Sin cuenta'}</Text>
+          <Text style={styles.jid}>{account.jid}</Text>
         </View>
-        {account && <Text style={styles.service}>{account.service}</Text>}
+        <Text style={styles.service}>{account.service}</Text>
       </View>
       <SettingsBody />
-      {account && (
-        <TouchableOpacity style={styles.logout} onPress={() => { void disconnect(); }} accessibilityLabel="Desconectar">
-          <Ionicons name="power" size={18} color={Colors.error} />
-          <Text style={styles.logoutText}>Desconectar</Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity style={styles.logout} onPress={() => { void disconnect(); }} accessibilityLabel="Desconectar">
+        <Ionicons name="power" size={18} color={Colors.error} />
+        <Text style={styles.logoutText}>Desconectar</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  ) : (
+    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
+      <AccountForm />
     </ScrollView>
   );
 }

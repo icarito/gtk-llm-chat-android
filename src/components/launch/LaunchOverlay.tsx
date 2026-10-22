@@ -4,7 +4,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useConnectionState } from '@/chat/stores';
 
-const MIN_MS = 1600;
 const MAX_MS = 8000;
 
 /** Pantalla de bienvenida brandeada: se muestra al arrancar hasta que la
@@ -14,18 +13,18 @@ export default function LaunchOverlay() {
   const online = useConnectionState() === 'online';
   const [hidden, setHidden] = useState(false);
   const opacity = useRef(new Animated.Value(1)).current;
-  const startedAt = useRef(Date.now());
 
+  // Oculta SIEMPRE a los MAX_MS como máximo (timer absoluto), online o no:
+  // si no hay cuenta (asistente de nuevo usuario/login) nunca llega online y,
+  // sin esto, el overlay quedaría pegado tapando la app para siempre.
   useEffect(() => {
-    const elapsed = Date.now() - startedAt.current;
-    const wait = Math.max(0, MIN_MS - elapsed);
     const t = setTimeout(() => {
-      if (!online && Date.now() - startedAt.current < MAX_MS) return;
       Animated.timing(opacity, { toValue: 0, duration: 450, useNativeDriver: true }).start(() => setHidden(true));
-    }, wait);
+    }, MAX_MS);
     return () => clearTimeout(t);
-  }, [online, opacity]);
+  }, [opacity]);
 
+  // Si hay conexión, se oculta antes (apenas se confirma online).
   useEffect(() => {
     if (!online) return;
     const t = setTimeout(() => {

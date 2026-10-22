@@ -4,11 +4,10 @@ import {
   Text,
   FlatList,
   TouchableOpacity,
-  TextInput,
   StyleSheet,
-  Alert,
   ActivityIndicator,
   Image,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useXmpp } from '@/xmpp/XmppContext';
@@ -18,6 +17,7 @@ import { useUpdateBanner } from '@/update/updater';
 import { presenceColor, presenceLabel } from '@/xmpp/presence';
 import type { XmppMessage } from '@/types/xmpp';
 import { InviteCard } from '@/components/nav/InviteCard';
+import { AccountForm } from '@/components/account/AccountForm';
 import { useAgentJids } from '@/components/nav/hooks';
 import { useUnread, useUnreadTotal } from '@/chat/stores';
 import { unread } from '@/xmpp/store';
@@ -87,10 +87,6 @@ export default function XmppScreen() {
     account,
     isConfigured,
   } = useXmpp();
-  const [jid, setJid] = useState('');
-  const [password, setPassword] = useState('');
-  const [server, setServer] = useState('wss://hablar.fuentelibre.org:5281/xmpp-websocket');
-  const [resource, setResource] = useState('gtk-llm-chat');
   // Avatares XEP-0084: llegan por PEP cuando el contacto los publica, así que
   // el roster tiene que repintarse al vuelo (no basta con leerlos al montar).
   const [avatars, setAvatars] = useState<Map<string, string>>(() => new Map());
@@ -128,16 +124,6 @@ export default function XmppScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [contacts, rooms, agentSet, previewFor, filter, unreadTotal],
   );
-
-  // Si el usuario terminó en el formulario con una cuenta ya guardada (logout
-  // manual, o la sesión nunca llegó a autoconectar), no tiene sentido hacerlo
-  // retipear JID y servidor — sólo la contraseña, que XmppContext no expone
-  // fuera de XmppService por seguridad.
-  useEffect(() => {
-    if (!account) return;
-    setJid((prev) => prev || account.jid);
-    setServer((prev) => prev || account.service);
-  }, [account]);
 
   useEffect(() => {
     // Sembramos con lo ya cacheado (los eventos PEP sólo llegan cuando el
@@ -206,18 +192,6 @@ export default function XmppScreen() {
 
     return () => { cancelled = true; };
   }, [state, contactJidsKey]);
-
-  const handleConnect = useCallback(async () => {
-    if (!jid || !password) {
-      Alert.alert('Error', 'JID y contraseña son requeridos.');
-      return;
-    }
-    try {
-      await connect(jid, password, server, resource, true);
-    } catch (err) {
-      Alert.alert('Error', `No se pudo conectar: ${String(err)}`);
-    }
-  }, [jid, password, server, resource, connect]);
 
   const handleChatWith = useCallback((contactJid: string) => {
     router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(contactJid) } } as never);
@@ -315,86 +289,9 @@ export default function XmppScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.headerTitle}>Cuenta XMPP</Text>
-      </View>
-
-      <View style={styles.formContainer}>
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>JID</Text>
-          <TextInput
-            style={styles.input}
-            value={jid}
-            onChangeText={setJid}
-            placeholder="usuario@hablar.fuentelibre.org"
-            placeholderTextColor={Colors.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="email-address"
-            editable={(state as string) !== 'connecting'}
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Contraseña</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="••••••••"
-            placeholderTextColor={Colors.textDim}
-            secureTextEntry
-            autoCapitalize="none"
-            editable={(state as string) !== 'connecting'}
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Servidor</Text>
-          <TextInput
-            style={styles.input}
-            value={server}
-            onChangeText={setServer}
-            placeholder="xmpp://hablar.fuentelibre.org:5222"
-            placeholderTextColor={Colors.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={(state as string) !== 'connecting'}
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Resource (opcional)</Text>
-          <TextInput
-            style={styles.input}
-            value={resource}
-            onChangeText={setResource}
-            placeholder="gtk-llm-chat"
-            placeholderTextColor={Colors.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={(state as string) !== 'connecting'}
-          />
-        </View>
-
-        <TouchableOpacity
-          style={[styles.connectBtn, (state as string) === 'connecting' && styles.connectBtnDisabled]}
-          onPress={handleConnect}
-          disabled={(state as string) === 'connecting'}
-        >
-          {(state as string) === 'connecting' ? (
-            <ActivityIndicator color={Colors.text} />
-          ) : (
-            <Text style={styles.connectBtnText}>Conectar</Text>
-          )}
-        </TouchableOpacity>
-
-        {(state as string) === 'error' && (
-          <Text style={styles.errorText}>Error de conexión. Verifica tus credenciales.</Text>
-        )}
-      </View>
-    </View>
+    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1 }}>
+      <AccountForm />
+    </ScrollView>
   );
 }
 
