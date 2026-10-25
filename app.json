@@ -2,7 +2,7 @@
   "expo": {
     "name": "gtk-llm-chat-android",
     "slug": "gtk-llm-chat-android",
-    "version": "0.3.3",
+    "version": "0.4.0-nightly.20261025",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "gtk-llm-chat",
@@ -24,7 +24,7 @@
         "backgroundColor": "#FFFFFF"
       },
       "package": "org.fuentelibre.gtk_llm_chat",
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "ACCESS_NETWORK_STATE",
         "RECORD_AUDIO",
