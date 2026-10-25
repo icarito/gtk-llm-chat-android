@@ -1,10 +1,11 @@
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { XmppMessage } from '@/types/xmpp';
 import { PushStatus } from '@/xmpp/pushStatus';
 import { displayName } from '@/xmpp/presence';
+import { isMuted } from '@/xmpp/muted';
 
 const PUSH_TOKEN_KEY = '@gtk_llm_chat:expo_push_token';
 const XMPP_MESSAGES_CHANNEL = 'xmpp_messages';
@@ -258,9 +259,33 @@ export function setConnected() {
 }
 
 // Show notification for incoming XMPP message
-export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {
+/** Notificación de llamada entrante para cuando la app NO está en primer plano
+ *  (el overlay no se ve; una notificación local suena y permite abrir). */
+export async function notifyIncomingCall(bare: string): Promise<void> {
   if (Platform.OS === 'web') return;
+  if (AppState.currentState === 'active') return;
+  const title = displayName(bare, contactNameCache.get(bare)) || 'Llamada entrante';
+  await Notifications.scheduleNotificationAsync({
+    identifier: `xmpp-call:${bare}`,
+    content: {
+      title,
+      body: 'Te están llamando (audio)',
+      sound: 'default',
+      ...(Platform.OS === 'android' ? { channelId: XMPP_MESSAGES_CHANNEL } : {}),
+      data: {
+        jid: bare,
+        type: 'xmpp_call',
+        url: notificationUrlForJid(bare),
+      },
+      priority: Notifications.AndroidNotificationPriority.HIGH,
+    },
+    trigger: null,
+  });
+}
+
+export async function notifyXmppMessage(msg: XmppMessage, contactName?: string) {  if (Platform.OS === 'web') return;
   if (isXmppNotificationNoise(msg)) return;
+  if (await isMuted(bareJid(msg.from))) return;
   // Tras reconectar, el servidor vuelca carbons y mensajes pendientes que
   // no son realmente nuevos. Una ventana de gracia evita la cascada de
   // notificaciones "tienes un mensaje nuevo" al abrir la app o reinstalar.

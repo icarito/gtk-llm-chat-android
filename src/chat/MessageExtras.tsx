@@ -46,8 +46,10 @@ function MessageExtrasImpl({ jid, message, onRetry }: Props) {
       {meta.actionable ? (
         <ApprovalForMessage jid={jid} messageId={String(message._id)} stanzaId={meta.stanzaId} />
       ) : null}
-      {(meta.correctedAtMs !== undefined || meta.encryption) ? (
+      {(meta.correctedAtMs !== undefined || meta.encryption || meta.sendState === 'pending' || meta.sendState === 'sent') ? (
         <View style={styles.badges}>
+          {meta.sendState === 'pending' ? <ActivityIndicator size={12} color={Colors.primary} accessibilityLabel="Enviando…" /> : null}
+          {meta.sendState === 'sent' ? <Ionicons name="checkmark" size={12} color={Colors.textDim} accessibilityLabel="Enviado" /> : null}
           {meta.correctedAtMs !== undefined ? <StreamingSpinner correctedAtMs={meta.correctedAtMs} /> : null}
           {isEncrypted(meta.encryption) ? (
             <Ionicons name="lock-closed" size={11} color={Colors.success} accessibilityLabel="Mensaje cifrado con OMEMO" />

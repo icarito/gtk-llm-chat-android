@@ -14,6 +14,12 @@ import { useCtx } from './Composer';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉'] as const;
 
+const formatTime = (ms: number): string => {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 interface Props {
   message: MessageState;
   jid: string;
@@ -95,6 +101,9 @@ function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Pr
           {chat.meta.extras ? (
             <MessageExtras jid={jid} message={chat} onRetry={onRetry} />
           ) : null}
+          <Text style={[styles.time, mine ? styles.timeMine : styles.timeIncoming]}>
+            {formatTime(chat.createdAt)}
+          </Text>
         </Pressable>
         {chat.reactions && chat.reactions.length > 0 ? (
           <View style={[styles.reactions, mine ? styles.reactionsMine : styles.reactionsIncoming]}>
@@ -118,6 +127,7 @@ function MessageBubbleImpl({ message, jid, group, onRetry, onQuote, notify }: Pr
         <Pressable
           style={styles.actionsBtn}
           onPress={() => setMenuFor(chat)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
           accessibilityLabel="Acciones del mensaje"
         >
@@ -236,6 +246,9 @@ const styles = StyleSheet.create({
   },
   bubbleMine: { backgroundColor: Colors.userBubble },
   bubbleIncoming: { backgroundColor: Colors.assistantBubble, borderWidth: 1, borderColor: Colors.assistantBubbleBorder },
+  time: { fontSize: 10, marginTop: 4 },
+  timeMine: { color: Colors.userBubbleText, opacity: 0.7, alignSelf: 'flex-end' },
+  timeIncoming: { color: Colors.textDim, alignSelf: 'flex-start' },
   retracted: { color: Colors.textDim, fontSize: 15, fontStyle: 'italic' },
   image: { width: 220, height: 220, borderRadius: 12 },
   reactions: {

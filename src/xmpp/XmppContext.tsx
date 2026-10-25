@@ -18,6 +18,7 @@ interface XmppContextValue {
   pushStatus: XmppPushStatus;
   connect: (jid: string, password: string, service?: string, resource?: string, omemoEnabled?: boolean) => Promise<void>;
   disconnect: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
   sendMessage: (to: string, body: string, type?: 'chat' | 'groupchat') => Promise<string>;
   sendTyping: (to: string) => Promise<void>;
   answerPendingAction: (actionId: string) => Promise<void>;
@@ -32,7 +33,7 @@ interface XmppContextValue {
 const XmppContext = createContext<XmppContextValue | null>(null);
 
 export function XmppProvider({ children }: { children: React.ReactNode }) {
-  const { account, loading, saveAccount } = useXmppAccount();
+  const { account, loading, saveAccount, deleteAccount: removeAccount } = useXmppAccount();
   const appState = useRef(AppState.currentState);
   // Snapshots estables del store (ver store.ts): sólo re-renderiza lo que cambió.
   const state = useSyncExternalStore(connection.subscribe.bind(connection), () => connection.legacyState());
@@ -82,6 +83,11 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     await XmppService.disconnect();
   }, []);
 
+  const deleteAccount = useCallback(async () => {
+    await XmppService.disconnect();
+    await removeAccount();
+  }, [removeAccount]);
+
   const setOmemoEnabled = useCallback(async (enabled: boolean) => {
     if (!account) throw new Error('No hay cuenta configurada');
     const updated = { ...account, omemoEnabled: enabled };
@@ -126,6 +132,7 @@ export function XmppProvider({ children }: { children: React.ReactNode }) {
     pushStatus,
     connect,
     disconnect,
+    deleteAccount,
     sendMessage,
     sendTyping,
     answerPendingAction,

@@ -1,16 +1,22 @@
-import { useCallback } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/constants/theme';
 import { AgentCard } from '@/components/nav/AgentCard';
 import { useAgentJids } from '@/components/nav/hooks';
 import { hasFleetSource } from '@/xmpp/fleet';
+import { displayName } from '@/xmpp/presence';
 
 export default function FlotaScreen() {
   const jids = useAgentJids();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const [query, setQuery] = useState('');
+  const trimmed = query.trim().toLowerCase();
+  const filteredJids = trimmed
+    ? jids.filter((jid) => displayName(jid).toLowerCase().includes(trimmed) || jid.toLowerCase().includes(trimmed))
+    : jids;
   const open = useCallback((jid: string) => {
     router.push({ pathname: '/xmpp-chat/[jid]', params: { jid: encodeURIComponent(jid) } } as never);
   }, [router]);
@@ -33,15 +39,30 @@ export default function FlotaScreen() {
           </Pressable>
         </View>
       </View>
+      <TextInput
+        style={styles.search}
+        placeholder="Buscar…"
+        placeholderTextColor={Colors.textDim}
+        value={query}
+        onChangeText={setQuery}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
       <FlatList
-        data={jids as string[]}
+        data={filteredJids}
         keyExtractor={(jid) => jid}
         renderItem={({ item }) => <AgentCard jid={item} onPress={open} />}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyText}>Aún no hay agentes.</Text>
-            <Text style={styles.emptySub}>Aparecen cuando publican su estado.</Text>
-          </View>
+          trimmed ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyText}>{`Sin resultados para "${query}".`}</Text>
+            </View>
+          ) : (
+            <View style={styles.empty}>
+              <Text style={styles.emptyText}>Aún no hay agentes.</Text>
+              <Text style={styles.emptySub}>Aparecen cuando publican su estado.</Text>
+            </View>
+          )
         }
       />
     </View>
@@ -56,6 +77,7 @@ const styles = StyleSheet.create({
   monitorBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#202A36', borderWidth: 1, borderColor: Colors.surfaceBorder },
   monitorText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
   monitorDisabled: { color: Colors.textDim },
+  search: { marginHorizontal: 16, marginTop: 12, backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, color: Colors.text, fontSize: 14 },
   empty: { padding: 40, alignItems: 'center' },
   emptyText: { fontSize: 16, color: Colors.muted },
   emptySub: { fontSize: 13, color: Colors.textDim, marginTop: 8 },

@@ -50,6 +50,8 @@ type Ctx = {
   insertMention: (name: string) => void;
   /** API del menú de menciones (para completar con Tab desde el input). */
   mentionRef: MutableRefObject<MentionApi>;
+  /** Adjuntos subiéndose en background (contador de upload() en vuelo). */
+  uploading: number;
 };
 const ComposerCtx = createContext<Ctx | null>(null);
 export const useCtx = () => {
@@ -92,7 +94,7 @@ async function upload(c: { jid: string; type: 'chat' | 'groupchat' }, uri: strin
 }
 
 /** Expone el runtime aui y el envío manual a las vistas del chat. */
-export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onLoadEarlier, isLoading, ...ctx }: Omit<Ctx, 'composingAt' | 'sendComposer' | 'insertMention' | 'mentionRef'> & {
+export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onLoadEarlier, isLoading, ...ctx }: Omit<Ctx, 'composingAt' | 'sendComposer' | 'insertMention' | 'mentionRef' | 'uploading'> & {
   quoteRef: MutableRefObject<((q: QuoteInfo) => void) | null>;
   messages: readonly ChatMessage[];
   hasEarlier?: boolean;
@@ -104,6 +106,16 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
   const sendingRef = useRef(false);
   const mentionRef = useRef<MentionApi>({ complete: () => {}, count: 0 });
   const auiRef = useRef<ReturnType<typeof useAui> | null>(null);
+  const [uploading, setUploading] = useState(0);
+
+  const trackUpload = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    setUploading((n) => n + 1);
+    try {
+      return await fn();
+    } finally {
+      setUploading((n) => n - 1);
+    }
+  }, []);
 
   const insertMention = useCallback((name: string) => {
     const aui = auiRef.current;
@@ -112,7 +124,7 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
     aui.composer.setText(`${st.text.replace(/\s+$/, '')} @${name} `);
   }, []);
 
-  const base = useMemo<Omit<Ctx, 'sendComposer' | 'insertMention' | 'mentionRef'>>(
+  const base = useMemo<Omit<Ctx, 'sendComposer' | 'insertMention' | 'mentionRef' | 'uploading'>>(
     () => ({ ...ctx, composingAt }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ctx.jid, ctx.type, ctx.online, ctx.resolveReply, ctx.notify],
@@ -126,7 +138,7 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
     for (const a of m.attachments ?? []) {
       for (const p of a.content) {
         if (p.type !== 'file') continue;
-        try { await upload(base, p.data, p.filename ?? a.name, p.mimeType); }
+        try { await trackUpload(() => upload(base, p.data, p.filename ?? a.name, p.mimeType)); }
         catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
       }
     }
@@ -137,7 +149,7 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
     } catch (e) {
       base.notify(e instanceof Error ? e.message : String(e));
     }
-  }, [base]);
+  }, [base, trackUpload]);
 
   // Envío manual: evita el append optimista del runtime (que duplicaría el
   // mensaje con el "pending" que ya aporta el store XMPP). Lee el estado del
@@ -167,7 +179,7 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
         if (!uri) continue;
         const name = file?.name ?? a.name ?? 'adjunto';
         const mime = file?.mime ?? a.contentType ?? 'application/octet-stream';
-        try { await upload(base, uri, name, mime); }
+        try { await trackUpload(() => upload(base, uri, name, mime)); }
         catch (e) { Alert.alert('No se pudo enviar el archivo', e instanceof Error ? e.message : String(e)); }
       }
         if (!text) return;
@@ -181,11 +193,11 @@ export function ComposerProvider({ children, quoteRef, messages, hasEarlier, onL
         sendingRef.current = false;
       }
     })();
-  }, [base]);
+  }, [base, trackUpload]);
 
   const value = useMemo<Ctx>(
-    () => ({ ...base, sendComposer, insertMention, mentionRef }),
-    [base, sendComposer, insertMention, mentionRef],
+    () => ({ ...base, sendComposer, insertMention, mentionRef, uploading }),
+    [base, sendComposer, insertMention, mentionRef, uploading],
   );
 
   const runtime = useExternalStoreRuntime<ChatMessage>({
@@ -563,7 +575,7 @@ function MentionBar() {
 
 /** Toolbar de <Chat>: referencia estable (constante de módulo), todo su estado va por aui. */
 export function ComposerToolbar() {
-  const { jid } = useCtx();
+  const { jid, uploading } = useCtx();
   // App edge-to-edge: sin este padding el input queda debajo de la barra de navegación
   // de Android (el InputToolbar de la lib lo hacía; el nuestro lo había perdido).
   const { bottom } = useSafeAreaInsets();
@@ -589,6 +601,14 @@ export function ComposerToolbar() {
           </AttachmentPrimitive.Root>
         )}
       </ComposerPrimitive.Attachments>
+      {uploading > 0 && (
+        <View style={styles.uploadingChip} accessibilityLiveRegion="polite">
+          <ActivityIndicator size={12} color={Colors.textDim} />
+          <Text style={styles.uploadingText}>
+            Subiendo…{uploading > 1 ? ` ${uploading}` : ''}
+          </Text>
+        </View>
+      )}
       <VoiceProvider>
         <ComposerPrimitive.Root style={styles.root}>
           <InputOrRecording />
@@ -623,4 +643,6 @@ const styles = StyleSheet.create({
   quoteText: { flex: 1, color: Colors.textDim, fontSize: 13 },
   chip: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 8, marginTop: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, alignSelf: 'flex-start' },
   chipText: { color: Colors.text, fontSize: 13, maxWidth: 220 },
+  uploadingChip: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 8, marginTop: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.surfaceBorder, alignSelf: 'flex-start' },
+  uploadingText: { color: Colors.textDim, fontSize: 13 },
 });

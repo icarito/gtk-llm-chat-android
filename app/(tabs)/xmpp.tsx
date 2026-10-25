@@ -2,6 +2,7 @@ import { memo, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
+  TextInput,
   FlatList,
   TouchableOpacity,
   StyleSheet,
@@ -23,6 +24,10 @@ import { useUnread, useUnreadTotal } from '@/chat/stores';
 import { unread } from '@/xmpp/store';
 import { ROSTER_FILTERS, buildRoster, filterRoster, previewText, type RosterFilter, type RosterItem } from '@/components/nav/rosterLogic';
 import { useRoomInvites, useRooms } from '@/xmpp/XmppContext';
+import { useSubscriptionRequests } from '@/xmpp/subscriptions';
+import { SubscriptionCard } from '@/components/nav/SubscriptionCard';
+import { bareJid } from '@/xmpp/parse';
+import type { XmppContact } from '@/types/xmpp';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -113,16 +118,30 @@ export default function XmppScreen() {
 
   const rooms = useRooms();
   const invites = useRoomInvites();
+  const subscriptionRequests = useSubscriptionRequests();
   const agentJids = useAgentJids();
   const [filter, setFilter] = useState<RosterFilter>('all');
+  const [query, setQuery] = useState('');
   const agentSet = useMemo(() => new Set(agentJids), [agentJids]);
   // Roster por actividad reciente: la conversación que se acaba de mover va
   // arriba; sin historial, al final y por nombre.
   const unreadTotal = useUnreadTotal();
   const roster = useMemo(
-    () => filterRoster(buildRoster(contacts, rooms, agentSet, previewFor, (jid) => unread.get(jid)), filter),
+    () => {
+      // Conversaciones con JIDs que aún no están en el roster (p. ej. le
+      // escribiste a alguien antes de suscribirse): se muestran igual.
+      const known = new Set(contacts.map((c) => c.jid));
+      const knownRooms = new Set(rooms.map((r) => r.jid));
+      const pseudoContacts: XmppContact[] = Array.from(messages.keys())
+        .filter((jid) => !known.has(jid) && !knownRooms.has(jid) && bareJid(jid) !== bareJid(account?.jid ?? ''))
+        .map((jid) => ({ jid, name: '', subscription: 'none', presence: 'offline', status: undefined, caps: undefined }));
+      const filtered = filterRoster(buildRoster([...contacts, ...pseudoContacts], rooms, agentSet, previewFor, (jid) => unread.get(jid)), filter);
+      const q = query.trim().toLowerCase();
+      if (!q) return filtered;
+      return filtered.filter((item) => item.name.toLowerCase().includes(q) || item.jid.toLowerCase().includes(q));
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [contacts, rooms, agentSet, previewFor, filter, unreadTotal],
+    [contacts, rooms, agentSet, previewFor, filter, unreadTotal, query, messages, account],
   );
 
   useEffect(() => {
@@ -264,11 +283,21 @@ export default function XmppScreen() {
           ))}
         </View>
 
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Buscar…"
+          placeholderTextColor={Colors.textDim}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.searchInput}
+        />
+
         <FlatList
           data={roster}
           keyExtractor={(item) => `${item.kind === 'room' ? 'r' : 'c'}:${item.jid}`}
           contentContainerStyle={styles.listContent}
-          ListHeaderComponent={<>{invites.map((i) => <InviteCard key={i.id} invite={i} />)}</>}
+          ListHeaderComponent={<>{invites.map((i) => <InviteCard key={i.id} invite={i} />)}{subscriptionRequests.map((req) => <SubscriptionCard key={req.bare} req={req} />)}</>}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Text style={styles.emptyText}>{filter === 'all' ? 'No hay conversaciones aún.' : 'Nada en esta categoría.'}</Text>
@@ -428,6 +457,18 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { color: Colors.muted, fontSize: 13 },
   chipTextActive: { color: Colors.background, fontWeight: '700' },
+  searchInput: {
+    marginHorizontal: 12,
+    marginBottom: 4,
+    backgroundColor: Colors.inputBackground,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: Colors.text,
+  },
   empty: {
     padding: 40,
     alignItems: 'center',

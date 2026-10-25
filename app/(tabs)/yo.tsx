@@ -11,7 +11,7 @@ import { SettingsBody } from '../settings';
 import { AccountForm } from '@/components/account/AccountForm';
 
 export default function YoScreen() {
-  const { account, state, disconnect } = useXmpp();
+  const { account, state, disconnect, deleteAccount } = useXmpp();
   const insets = useSafeAreaInsets();
   const online = state === 'online';
   const bare = account?.jid.split('/')[0] ?? '';
@@ -46,6 +46,13 @@ export default function YoScreen() {
       { text: 'Galería', onPress: () => { void change('gallery'); } },
     ], { cancelable: true });
   }, [online, change]);
+
+  const onLogoutAndForget = useCallback(() => {
+    Alert.alert('¿Cerrar sesión y borrar la cuenta guardada?', 'La cuenta se eliminará de este dispositivo.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Cerrar sesión', style: 'destructive', onPress: () => { void deleteAccount(); } },
+    ], { cancelable: true });
+  }, [deleteAccount]);
   return account ? (
     <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
@@ -66,6 +73,10 @@ export default function YoScreen() {
         <Ionicons name="power" size={18} color={Colors.error} />
         <Text style={styles.logoutText}>Desconectar</Text>
       </TouchableOpacity>
+      <TouchableOpacity style={styles.logoutForget} onPress={onLogoutAndForget} accessibilityLabel="Cerrar sesión y olvidar cuenta">
+        <Ionicons name="trash-outline" size={18} color={Colors.error} />
+        <Text style={styles.logoutText}>Cerrar sesión y olvidar cuenta</Text>
+      </TouchableOpacity>
     </ScrollView>
   ) : (
     <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
@@ -85,5 +96,6 @@ const styles = StyleSheet.create({
   jid: { color: Colors.text, fontSize: 14 },
   service: { color: Colors.muted, fontSize: 12, marginTop: 2 },
   logout: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 18 },
+  logoutForget: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 18, borderTopWidth: 1, borderTopColor: Colors.surfaceBorder },
   logoutText: { color: Colors.error, fontSize: 16, fontWeight: '600' },
 });

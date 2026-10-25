@@ -1,8 +1,9 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import { Alert, Modal, Pressable, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { useRoom, useXmpp } from '@/xmpp/XmppContext';
+import { leaveRoom } from '@/xmpp/rooms';
 import { ban, getRoomConfigForm, invite, kick, setAffiliation, setRole, setSubject, submitRoomConfig } from '@/xmpp/moderation';
 import { devicesLabel, groupOccupants, type OccupantGroup } from '@/xmpp/xep/occupants';
 import { roleWord } from '@/components/nav/rosterLogic';
@@ -29,6 +30,7 @@ const AFFILIATION_WORD: Record<string, string> = { owner: 'dueño', admin: 'admi
 export default function RoomOccupantsScreen() {
   const { jid: raw } = useLocalSearchParams<{ jid: string }>();
   const jid = decodeURIComponent(raw ?? '');
+  const router = useRouter();
   const room = useRoom(jid);
   const { contacts } = useXmpp();
   const [target, setTarget] = useState<OccupantGroup | null>(null);
@@ -100,6 +102,19 @@ export default function RoomOccupantsScreen() {
             <Pressable onPress={() => setShowInvite(true)} accessibilityRole="button">
               <Text style={styles.headerButton}>Invitar</Text>
             </Pressable>
+            {(room?.state === 'joined' || room?.state === 'joining') && (
+              <Pressable
+                onPress={() => {
+                  Alert.alert('Salir de la sala', '¿Salir de esta sala?', [
+                    { text: 'Cancelar', style: 'cancel' },
+                    { text: 'Salir', style: 'destructive', onPress: () => { leaveRoom(jid).catch(fail); router.back(); } },
+                  ]);
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.headerButton, { color: Colors.error }]}>Salir</Text>
+              </Pressable>
+            )}
           </View>
         ),
       }} />

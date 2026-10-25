@@ -134,7 +134,7 @@ function AgentBarInner({ jid }: { jid: string }) {
 
   return (
     <View style={styles.bar}>
-      <Pressable style={styles.strip} onPress={() => setOpen((v) => !v)} accessibilityRole="button">
+      <Pressable style={styles.strip} onPress={() => setOpen((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: open }}>
         <View style={[styles.dot, { backgroundColor: presenceColor(contact?.presence ?? 'offline') }]} />
         <Text style={styles.model} numberOfLines={1}>{t?.model?.split('/').pop() ?? contact?.status ?? ''}</Text>
         <View style={styles.spacer} />

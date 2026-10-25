@@ -1,11 +1,13 @@
 import { useCallback, useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { AgentBar } from '@/chat/AgentBar';
 import { ChatHeaderTitle } from '@/chat/ChatHeaderTitle';
 import { ChatPane } from '@/chat/ChatPane';
 import { Colors } from '@/constants/theme';
+import { toggleMuted, useMuted } from '@/xmpp/muted';
 import { dismissNotificationForJid, setActiveChatJid } from '@/xmpp/notifications';
 import { unread } from '@/xmpp/store';
 import { XmppService } from '@/xmpp/XmppService';
@@ -36,11 +38,14 @@ export default function XmppChatScreen() {
 
   const headerTitle = useCallback(() => <ChatHeaderTitle jid={decodedJid} />, [decodedJid]);
 
+  const headerRight = useCallback(() => <MuteButton jid={decodedJid} />, [decodedJid]);
+
   return (
     <View style={styles.container}>
       <Stack.Screen
         options={{
           headerTitle,
+          headerRight,
           headerStyle: { backgroundColor: Colors.surface },
           headerTintColor: Colors.text,
         }}
@@ -49,6 +54,30 @@ export default function XmppChatScreen() {
       <AgentBar jid={decodedJid} />
       <ChatPane jid={decodedJid} />
     </View>
+  );
+}
+
+function MuteButton({ jid }: { jid: string }) {
+  const muted = useMuted(jid);
+  const onPress = useCallback(() => {
+    toggleMuted(jid)
+      .then((nowMuted) => {
+        if (nowMuted) dismissNotificationForJid(jid).catch(() => {});
+      })
+      .catch(() => {});
+  }, [jid]);
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={12}
+      accessibilityLabel={muted ? 'Dejar de silenciar' : 'Silenciar conversación'}
+    >
+      <Ionicons
+        name={muted ? 'notifications-off' : 'notifications'}
+        size={22}
+        color={Colors.text}
+      />
+    </Pressable>
   );
 }
 

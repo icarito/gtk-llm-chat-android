@@ -13,7 +13,7 @@ export const AgentCard = memo(function AgentCard({ jid, onPress }: { jid: string
   const contact = useContact(jid);
   const state = useAgentState(jid);
   const caps = useAgentCaps(jid);
-  if (!caps.caps?.isAgent) return null;
+  if (caps.status === 'ready' && !caps.caps?.isAgent) return null;
   const activity = state?.activity || state?.availability || contact?.status || presenceLabel(contact?.presence ?? 'offline');
   const detail = [state?.model, state?.tool && `🔧 ${formatTool(state.tool)}`, state?.pendingCount ? `${state.pendingCount} en cola` : '']
     .filter(Boolean).join(' · ');

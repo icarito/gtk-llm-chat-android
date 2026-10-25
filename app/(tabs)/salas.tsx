@@ -50,7 +50,7 @@ const RoomRow = memo(function RoomRow({ room, onOpen, onOccupants }: {
         </Pressable>
       )}
       {room.bookmarked && (
-        <View style={styles.autojoin}>
+        <View style={styles.autojoin} onStartShouldSetResponder={() => true}>
           <Text style={styles.autojoinLabel}>Auto</Text>
           <Switch
             value={!!room.autojoin}

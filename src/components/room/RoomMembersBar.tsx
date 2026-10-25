@@ -95,7 +95,7 @@ export const RoomMembersBar = memo(function RoomMembersBar({ jid }: { jid: strin
 
   return (
     <View style={styles.container}>
-      <Pressable style={styles.header} onPress={() => setOpen((v) => !v)} accessibilityRole="button">
+      <Pressable style={styles.header} onPress={() => setOpen((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: open }}>
         <View style={styles.headerLeft}>
           {strip(28)}
           <Text style={styles.count}>{members.length} miembro{members.length > 1 ? 's' : ''}</Text>

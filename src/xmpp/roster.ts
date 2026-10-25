@@ -1,6 +1,6 @@
 /** RFC 6121: roster y presencia de contactos. */
 import { xml } from '@xmpp/client';
-import type { Element } from '@xmpp/xml';
+import type { Client, Element } from '@xmpp/xml';
 import type { XmppContact } from '@/types/xmpp';
 import { updateContactNameCache } from '@/xmpp/notifications';
 import { updateContactShortcuts } from '@/xmpp/shortcuts';
@@ -8,8 +8,9 @@ import { bareJid, parseCaps } from '@/xmpp/parse';
 import { trackMucOccupant } from '@/xmpp/muc';
 import { sendInitialPresence } from '@/xmpp/disco';
 import type { StanzaCtx } from '@/xmpp/session';
-import { connection } from '@/xmpp/session';
+import { connection, session, usableClient } from '@/xmpp/session';
 import { contacts } from '@/xmpp/store';
+import { subscriptions } from '@/xmpp/subscriptions';
 
 /** bare JID -> the set of their resources currently announcing availability. */
 let onlineResources = new Map<string, Set<string>>();
@@ -35,6 +36,30 @@ contacts.subscribe(() => {
  * the presence handler drops all of it (it only updates known contacts)
  * and the server never resends, leaving every contact stuck offline.
  */
+export async function loadRoster(client: Client): Promise<void> {
+  const result = await client.iqCaller.request(
+    xml('iq', { type: 'get' }, xml('query', { xmlns: 'jabber:iq:roster' })),
+    15000,
+  );
+  const items = result.getChild('query', 'jabber:iq:roster')?.getChildren('item') ?? [];
+  const ownBare = bareJid(session.account?.jid ?? '');
+  contacts.clear();
+  for (const item of items) {
+    const jid = (item.attrs.jid as string) || '';
+    if (!jid || bareJid(jid) === ownBare) continue;
+    const sub = (item.attrs.subscription as string) || 'none';
+    contacts.set(jid, {
+      jid,
+      name: (item.attrs.name as string) || '',
+      subscription: sub as XmppContact['subscription'],
+      presence: 'offline',
+      status: undefined,
+      caps: undefined,
+    });
+  }
+  contacts.commit();
+}
+
 export function fetchRosterThenAnnounce(ctx: StanzaCtx): Promise<void> {
   connection.step('roster', 'active');
   return ctx.client.iqCaller.request(
@@ -78,6 +103,23 @@ export function fetchRosterThenAnnounce(ctx: StanzaCtx): Promise<void> {
   });
 }
 
+/** Acepta una solicitud de suscripción (presence subscribe) y refresca el roster. */
+export async function acceptSubscription(bare: string): Promise<void> {
+  const client = usableClient();
+  if (!client) throw new Error('Sin conexión');
+  await client.send(xml('presence', { to: bare, type: 'subscribed' }));
+  await client.send(xml('presence', { to: bare, type: 'subscribe' }));
+  subscriptions.remove(bare);
+  await loadRoster(client).catch(() => {});
+}
+
+/** Rechaza una solicitud de suscripción. */
+export async function declineSubscription(bare: string): Promise<void> {
+  const client = usableClient();
+  if (client) await client.send(xml('presence', { to: bare, type: 'unsubscribed' })).catch(() => {});
+  subscriptions.remove(bare);
+}
+
 export function handlePresence(stanza: Element, ctx: StanzaCtx) {
   const ptype = stanza.attrs.type;
   const from = stanza.attrs.from as string | undefined;
@@ -88,11 +130,12 @@ export function handlePresence(stanza: Element, ctx: StanzaCtx) {
   trackMucOccupant(stanza, bare, ptype);
 
   if (ptype === 'subscribe') {
-    ctx.client.send(xml('presence', { to: bare, type: 'subscribed' }));
-    ctx.client.send(xml('presence', { to: bare, type: 'subscribe' }));
+    // No auto-aceptar: se muestra al usuario para que acepte/rechace.
+    subscriptions.upsert({ bare, from, timestamp: Date.now() });
     return;
   }
   if (ptype === 'unsubscribe') {
+    subscriptions.remove(bare);
     ctx.client.send(xml('presence', { to: bare, type: 'unsubscribed' }));
     return;
   }
