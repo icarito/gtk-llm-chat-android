@@ -11,6 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { XmppProvider } from '@/xmpp/XmppContext';
 import LaunchOverlay from '@/components/launch/LaunchOverlay';
+import CallOverlay from '@/components/call/CallOverlay';
 import { XmppService } from '@/xmpp/XmppService';
 import { setupNotifications, setAppForeground, dismissStaleNotifications } from '@/xmpp/notifications';
 import { shortcutJid } from '@/xmpp/shortcuts';
@@ -172,6 +173,7 @@ export default function RootLayout() {
             />
           </Stack>
           <LaunchOverlay />
+          <CallOverlay />
           </View>
         </XmppProvider>
       </SafeAreaProvider>

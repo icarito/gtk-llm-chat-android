@@ -143,6 +143,23 @@ o `node-polyfills/crypto` instala un `getRandomValues` basado en Math.random.
   no tiene el mismo bug porque NO está dentro de una FlatList — vive
   directo en la burbuja, sin virtualización de lista de por medio.
 
+- **Las llamadas Jingle NO envuelven las acciones en `<jingle-message>`.**
+  XEP-0353 define un elemento DISTINTO por acción (`<propose/>`,
+  `<proceed/>`, `<reject/>`, `<ringing/>`, `<retract/>`, `<finish/>`), hijo
+  directo de `<message type='chat'>` con `xmlns='urn:xmpp:jingle-message:0'`.
+  Inventar un contenedor `<jingle-message action='...'/>` compila, pasa
+  tests que usan el mismo formato torcido, y NO interopera con NADA: Dino y
+  AnotherIM ignoran silenciosamente el propose (ni modal, ni botón, ni
+  error). Tres más del mismo paquete que hay que respetar para que la
+  llamada conecte: (1) responder un `<proceed/>`, no `<accept/>` — el
+  `<accept/>` es el aviso ENTRE dispositivos del responder, no hacia el
+  llamador; (2) el `session-initiate` va al FULL JID que envió el
+  proceed, no al bare; (3) tras `session-initiate` entrante responder
+  `session-accept` de inmediato (el content se ECO con creator/name del
+  iniciador y creator='responder'/otro name → Dino descarta el content y
+  aborta; libwebrtc además exige a=mid/a=setup/a=rtcp-mux en el SDP
+  reconstruido o createAnswer muere sin rastro).
+
 - **`maxWidth` de la burbuja tiene que vivir en el hijo DIRECTO de
   `messageRow`, no más adentro.** `MessageBubble` (el GestureDetector +
   Animated.View del swipe-para-seleccionar, ver arriba) se intercala entre

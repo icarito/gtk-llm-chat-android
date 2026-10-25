@@ -13,6 +13,7 @@ import {
 } from '@/xmpp/ns';
 import { capsNotifyFeatures } from '@/xmpp/pep/namespaces';
 import { NS_BOOKMARKS } from '@/xmpp/xep/bookmarks';
+import { base64FromBytes, sha1Hex } from '@/xmpp/sha1';
 import type { StanzaCtx } from '@/xmpp/session';
 
 /**
@@ -33,6 +34,13 @@ const CAPS_FEATURES = [
   CHAT_STATES_NS,
   // XEP-0402: avisos de marcadores de salas (autojoin en vivo desde otro cliente).
   `${NS_BOOKMARKS}+notify`,
+  // Llamadas Jingle (audio 1:1): que Dino/otros clientes habiliten el botón.
+  'urn:xmpp:jingle:1',
+  'urn:xmpp:jingle:apps:rtp:1',
+  'urn:xmpp:jingle:apps:rtp:audio',
+  'urn:xmpp:jingle:transports:ice-udp:1',
+  'urn:xmpp:jingle:transports:dtls-srtp:1',
+  'urn:xmpp:jingle-message:0',
 ];
 
 export function getActiveCapsFeatures(): string[] {
@@ -45,42 +53,78 @@ export function getActiveCapsFeatures(): string[] {
   return features;
 }
 
-// XEP-0115 caps. El `ver` NO es el hash SHA-1 que manda la spec: es un
-// identificador opaco de este conjunto de features. No hay SHA-1 en el bundle
-// de RN (ni una dependencia de cripto que valga la pena arrastrar por esto).
-//
-// Funciona porque el servidor cachea por node#ver y, cuando ve un ver que no
-// conoce, nos pregunta por disco#info al recurso completo — y eso sí lo
-// respondemos (handler de iq/get más abajo). Prosody no valida el hash.
-//
-// OJO, DOS TRAMPAS, y las dos fallan EN SILENCIO (no llega telemetría, sin
-// error ni stanza de aviso):
-//  1. Si cambias CAPS_FEATURES, SUBE ESTA VERSIÓN. Un servidor que cacheó el
-//     ver anterior no vuelve a preguntar y los features nuevos no se anuncian.
-//  2. Si algún día el servidor sí verifica el hash, esto deja de funcionar y
-//     habrá que calcular el ver de verdad (el gateway lo hace en
-//     capsVerHash(), src/channels/xmpp.ts) — con una implementación de SHA-1.
-// SUBIDA A MANO al añadir el +notify de avatares: el servidor cachea por
-// node#ver y, con el ver anterior, no vuelve a preguntar por disco#info —
-// los features nuevos no se anunciarían y no llegarían los avatares.
-// v4: + chatstates (XEP-0085). v8: + hooks OpenClaw (capsNotifyFeatures) + bookmarks+notify (XEP-0402).
-// Con OMEMO se usa otro ver para forzar a servidor/contactos (incl. OpenClaw) a re-consultar disco#info
-// (XEP-0115) y detectar eu.siacs.conversations.axolotl+notify de inmediato.
-// v10: + urn:xmpp:omemo:2:devices+notify.
-export function capsVer(config: XmppAccountConfig): string {
-  return config.omemoEnabled
-    ? 'v10-telemetry-hooks-avatar-chatstates-bookmarks-omemo-omemo2'
-    : 'v8-telemetry-hooks-avatar-chatstates-bookmarks';
+/**
+ * XEP-0115 caps. El `ver` es AHORA el SHA-1 real de la forma canónica
+ * (identidad + features ordenados). Antes era un identificador opaco: el
+ * servidor (Prosody) no valida el hash, pero clientes como Dino SÍ lo
+ * verifican contra disco#info y rechazan un ver que no corresponda (botón
+ * de llamada deshabilitado). Al derivarse del contenido, cualquier cambio de
+ * features cambia el ver automáticamente.
+ */
+export function capsVer(_config: XmppAccountConfig): string {
+  // Dino computa la identidad como "category/type//name" (doble barra antes
+  // del nombre) en su verificación XEP-0115. Usar "category/type/name"
+  // (barra simple) genera un hash distinto y Dino descarta nuestras caps.
+  const parts = ['client/phone//gtk-llm-chat-android'];
+  for (const feature of [...getActiveCapsFeatures()].sort()) parts.push(feature);
+  const canonical = parts.join('<') + '<';
+  const hex = sha1Hex(canonical);
+  const bytes = new Uint8Array(20);
+  for (let i = 0; i < 20; i++) bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return base64FromBytes(bytes);
 }
 
 /** Presencia inicial con caps. Sin ella el servidor no nos enruta mensajes entrantes. */
 export function sendInitialPresence(ctx: StanzaCtx) {
-  ctx.client.send(xml('presence', {}, xml('c', {
+  ctx.client.send(xml('presence', { priority: '8' }, xml('c', {
     xmlns: 'http://jabber.org/protocol/caps',
     hash: 'sha-1',
     node: CAPS_NODE,
     ver: capsVer(ctx.config),
   }))).catch(() => {});
+}
+
+/** XEP-0030 disco#items: no publicamos nodos; respuesta vacía es correcta. */
+export function handleDiscoItemsGet(stanza: Element, ctx: StanzaCtx): boolean {
+  if (!(stanza.is('iq') && stanza.attrs.type === 'get')) return false;
+  const query = stanza.getChild('query', 'http://jabber.org/protocol/disco#items');
+  if (!query) return false;
+  const from = stanza.attrs.from as string | undefined;
+  const id = stanza.attrs.id as string | undefined;
+  const node = query.attrs.node as string | undefined;
+  // eslint-disable-next-line no-console
+  console.warn(`[disco] info get de ${from ?? ''} node=${node ?? ''}`);
+  ctx.client.send(
+    xml(
+      'iq',
+      { type: 'result', ...(from ? { to: from } : {}), ...(id ? { id } : {}) },
+      xml('query', { xmlns: 'http://jabber.org/protocol/disco#items', ...(node ? { node } : {}) }),
+    ),
+  ).catch(() => {});
+  return true;
+}
+
+/** XEP-0199 ping (y iq get vacío): responder siempre, jamás error. */
+export function handlePingGet(stanza: Element, ctx: StanzaCtx): boolean {
+  if (!(stanza.is('iq') && stanza.attrs.type === 'get')) return false;
+  if (stanza.getChild('ping', 'urn:xmpp:ping')) {
+    sendIqResult(stanza, ctx);
+    return true;
+  }
+  if (stanza.getChildElements().length === 0) {
+    // Ping "vacío" (algunos clientes no incluyen <ping/>).
+    sendIqResult(stanza, ctx);
+    return true;
+  }
+  return false;
+}
+
+function sendIqResult(stanza: Element, ctx: StanzaCtx): void {
+  const from = stanza.attrs.from as string | undefined;
+  const id = stanza.attrs.id as string | undefined;
+  // eslint-disable-next-line no-console
+  console.warn(`[disco] resultado para goq ${id ?? ''} de ${from ?? ''}`);
+  ctx.client.send(xml('iq', { type: 'result', ...(from ? { to: from } : {}), ...(id ? { id } : {}) })).catch(() => {});
 }
 
 /**
