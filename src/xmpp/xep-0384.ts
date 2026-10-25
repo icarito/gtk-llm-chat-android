@@ -609,7 +609,21 @@ class OmemoService {
   }
 
   async publishBundle(): Promise<void> {
-    if (!this.xmppClient || !this.deviceId || !this.signedPreKey) return;
+    // Las claves se generan de forma asíncrona al iniciar: esperar a que
+    // existan de verdad antes de publicar (si no, publicamos un bundle vacío
+    // que clientes como Dino descartan como "Bad bundle").
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (
+        this.xmppClient &&
+        this.deviceId &&
+        this.signedPreKey &&
+        this.identityPublicKey &&
+        this.signedPreKey.signature &&
+        this.identityPublicKey.length > 0
+      ) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (!this.xmppClient || !this.deviceId || !this.signedPreKey || !this.identityPublicKey) return;
 
     // eslint-disable-next-line no-console
     console.log('[OMEMO] Publishing bundle to PEP...');
